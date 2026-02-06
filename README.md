@@ -1,6 +1,6 @@
 # Stock Analysis Agent
 
-A modular, quantitative stock analysis tool with 5 analysis engines, market regime detection, adaptive learning, backtesting, and risk management. Runs locally, costs $0/month by default.
+A modular, quantitative stock analysis tool with 5 analysis engines, market regime detection, adaptive learning, backtesting, and risk management. Covers **83 market packages** across **3,800+ symbols** from all major global exchanges. Runs locally, costs $0/month by default.
 
 **This is NOT financial advice.** This tool is for educational and research purposes only. No guarantees of returns.
 
@@ -20,9 +20,39 @@ python stock_agent.py web
 
 # Or use the terminal
 python stock_agent.py ticker NVDA
+python stock_agent.py scan              # prompts for package selection
+python stock_agent.py packages          # list all 83 packages
 ```
 
 No API keys required for default operation (`LLM_MODE=off`).
+
+## Global Market Coverage
+
+The system organizes **3,800+ symbols** into **83 packages** across 6 regions. You always choose which package to scan - the system never runs all symbols at once.
+
+| Region | Packages | Symbols | Coverage |
+|--------|----------|---------|----------|
+| **US** | 29 | ~2,900 | S&P 500, NASDAQ 100, Mid/Small/Micro Cap, 18 Sector packages, Dividend Aristocrats, REITs, IPOs |
+| **Europe** | 11 | ~625 | UK FTSE, Germany DAX, France CAC 40, Switzerland SMI, Nordic, Netherlands, Spain, Italy, more |
+| **Asia-Pacific** | 12 | ~975 | Japan Nikkei/TOPIX, China ADRs + HK, South Korea KOSPI, India NIFTY, Taiwan, Australia ASX, ASEAN |
+| **Americas** | 5 | ~270 | Canada TSX, Brazil Ibovespa, Mexico IPC, Latin America |
+| **Middle East & Africa** | 2 | ~75 | Saudi, UAE, Qatar, South Africa JSE |
+| **Global** | 22 | ~700 | ETFs (Sector, Country, Bond, Commodity, Leveraged), Themes (AI, Cybersecurity, Cannabis, Space, Quantum) |
+
+### Package Commands
+
+```bash
+python stock_agent.py packages                      # List all 83 packages with symbol counts
+python stock_agent.py scan 10 --package japan        # Scan Japan package, show top 10
+python stock_agent.py scan 5 --package sector_semiconductors  # Scan semiconductors
+python stock_agent.py scan                           # Interactive prompt to choose a package
+python stock_agent.py backtest 12 --package us_mega_cap  # Backtest US mega caps
+```
+
+Set default active packages via environment variable:
+```bash
+ACTIVE_PACKAGES=us_sp500,uk_ftse,japan python stock_agent.py scan
+```
 
 ## Web Dashboard
 
@@ -36,23 +66,27 @@ The dashboard has 7 pages:
 | Page | Description |
 |------|-------------|
 | **Ticker Analysis** | Regime-aware analysis across 5 engines + multi-timeframe confirmation |
-| **Market Scan** | Scans watchlist with regime-adjusted weights, ranked by combined score |
+| **Market Scan** | Select a package, scan with regime-adjusted weights, ranked by combined score |
 | **Portfolio** | Positions, cash, drawdown, trade history, exit signals |
 | **Engine Performance** | Per-engine accuracy tracking, adaptive weights, analysis history |
 | **Backtest** | Walk-forward backtesting with equity curve, Sharpe, vs SPY |
 | **Discovery** | Reddit trending tickers + RSS news feed |
-| **Settings** | Current risk parameters, LLM config, watchlist |
+| **Settings** | LLM mode, risk parameters, API keys, active packages |
 
 ## Terminal CLI
 
 ```bash
 python stock_agent.py ticker NVDA       # Full analysis (regime + 5 engines + timeframe filter)
-python stock_agent.py scan 5            # Scan watchlist, show top 5 opportunities
+python stock_agent.py scan              # Interactive package selection, then scan
+python stock_agent.py scan 10 -p japan  # Scan Japan package, show top 10
+python stock_agent.py packages          # List all 83 packages by region
 python stock_agent.py portfolio show    # Portfolio state + active exit signals
 python stock_agent.py portfolio stats   # Trade statistics + engine accuracy
-python stock_agent.py backtest 12       # Walk-forward backtest over 12 months
+python stock_agent.py backtest 12       # Interactive package selection, then backtest
+python stock_agent.py backtest 6 -p us_mega_cap  # Backtest specific package
 python stock_agent.py discovery         # Discover tickers from news + Reddit
 python stock_agent.py universe update   # Refresh S&P 500 / momentum / value lists
+python stock_agent.py settings          # Interactive settings (LLM, API keys, risk params)
 python stock_agent.py help              # Full help with all env vars
 ```
 
@@ -64,7 +98,8 @@ Legacy modes (`screen`, `watchlist`, `discover`, `auto`) remain available for ba
 stock_agent.py          # Entry point (routes to web or cli)
 app.py                  # Streamlit web dashboard (7 pages)
 config/
-  settings.py           # All configurable parameters (risk, LLM, watchlist)
+  settings.py           # All configurable parameters (risk, LLM, packages)
+  watchlists.py         # 83 packages, 3800+ symbols across all global markets
   logging_config.py     # Structured logging with file rotation
 data/
   indicators.py         # 13 indicators: RSI, SMA, ATR, MACD, BB, OBV, Stochastic,
@@ -94,7 +129,7 @@ portfolio/
   memory.py             # Learning system: save analyses, check outcomes, adaptive weights
   backtest.py           # Walk-forward backtesting framework
 cli/
-  main.py               # argparse entry point
+  main.py               # argparse entry point + interactive package prompts
   display.py            # All formatting and display functions
 connectors/
   base.py               # Abstract BrokerConnector interface
@@ -170,7 +205,8 @@ The system improves over time:
 Walk-forward backtesting validates the system on historical data:
 
 ```bash
-python stock_agent.py backtest 12       # 12-month backtest on full watchlist
+python stock_agent.py backtest 12 --package us_mega_cap   # Backtest specific package
+python stock_agent.py backtest 12                          # Interactive package prompt
 ```
 
 **Metrics:** Total return, Sharpe ratio, max drawdown, win rate, profit factor, excess return vs SPY.
@@ -179,7 +215,7 @@ The web dashboard provides an interactive backtest page with equity curve chart 
 
 ## Risk Parameters
 
-All risk parameters are configurable via environment variables:
+All risk parameters are configurable via environment variables or the interactive settings prompt:
 
 | Parameter | Env Var | Default | Description |
 |-----------|---------|---------|-------------|
@@ -194,7 +230,13 @@ All risk parameters are configurable via environment variables:
 | Swing Stop | `STOP_LOSS_ATR_SWING` | 2.0 ATR | Stop loss for swing trades |
 | Position Stop | `STOP_LOSS_ATR_POSITION` | 2.5 ATR | Stop loss for position trades |
 
-Example override:
+Configure via terminal or web:
+```bash
+python stock_agent.py settings    # Interactive prompt (LLM, API keys, risk params)
+python stock_agent.py web         # Settings page in web dashboard
+```
+
+Or via environment:
 ```bash
 MAX_POSITION_PCT=0.15 MAX_SIMULTANEOUS_POSITIONS=3 python stock_agent.py ticker NVDA
 ```

@@ -95,13 +95,13 @@ def get_sp500_list(max_symbols: int = 40) -> List[str]:
     return (cached or _FALLBACK_SP500)[:max_symbols]
 
 
-def get_momentum_stocks(max_symbols: int = 30) -> List[str]:
+def get_momentum_stocks(max_symbols: int = 30, candidates: List[str] = None) -> List[str]:
     """Screen for momentum stocks: >5% monthly return + volume surge."""
-    candidates = [
-        "NVDA", "AMD", "TSLA", "META", "GOOGL", "MSFT", "AAPL", "NFLX",
-        "SMCI", "ARM", "PLTR", "SNOW", "CRM", "NOW", "ADBE", "NET",
-        "CRWD", "ZS", "DDOG", "OKTA", "MDB", "COIN", "SQ", "HOOD",
-    ]
+    etfs = {"SPY", "QQQ", "IWM", "DIA", "XLK", "XLV", "XLF", "XLY", "XLP",
+            "XLE", "XLI", "XLB", "XLU", "XLRE", "XLC", "VXX"}
+    if candidates is None:
+        candidates = list(_FALLBACK_SP500)
+    candidates = [s for s in candidates if s not in etfs]
     result = []
     for sym in candidates:
         try:
@@ -118,13 +118,13 @@ def get_momentum_stocks(max_symbols: int = 30) -> List[str]:
     return (result or _FALLBACK_MOMENTUM)[:max_symbols]
 
 
-def get_value_stocks(max_symbols: int = 30) -> List[str]:
+def get_value_stocks(max_symbols: int = 30, candidates: List[str] = None) -> List[str]:
     """Screen for value: P/E < 15, P/B < 2, >10% below 52-week high."""
-    candidates = [
-        "BAC", "JPM", "WFC", "C", "GS", "MS", "USB", "PNC",
-        "XOM", "CVX", "COP", "EOG", "OXY", "SLB",
-        "F", "GM", "CAT", "DE", "BA", "GE", "MMM", "HON",
-    ]
+    etfs = {"SPY", "QQQ", "IWM", "DIA", "XLK", "XLV", "XLF", "XLY", "XLP",
+            "XLE", "XLI", "XLB", "XLU", "XLRE", "XLC", "VXX"}
+    if candidates is None:
+        candidates = list(_FALLBACK_SP500)
+    candidates = [s for s in candidates if s not in etfs]
     result = []
     for sym in candidates:
         try:
@@ -143,10 +143,10 @@ def get_value_stocks(max_symbols: int = 30) -> List[str]:
     return (result or _FALLBACK_VALUE)[:max_symbols]
 
 
-def update_all_universes() -> Dict[str, List[str]]:
-    """Refresh all stock universes."""
+def update_all_universes(active_symbols: List[str] = None) -> Dict[str, List[str]]:
+    """Refresh all stock universes. Uses active_symbols for momentum/value screening."""
     return {
         "sp500": get_sp500_list(),
-        "momentum": get_momentum_stocks(),
-        "value": get_value_stocks(),
+        "momentum": get_momentum_stocks(candidates=active_symbols),
+        "value": get_value_stocks(candidates=active_symbols),
     }

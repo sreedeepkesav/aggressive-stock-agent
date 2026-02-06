@@ -6870,7 +6870,7 @@ def main():
         return
 
     # New modular CLI modes (recommended)
-    if mode in ('ticker', 'scan', 'portfolio', 'discovery', 'universe', 'backtest'):
+    if mode in ('ticker', 'scan', 'portfolio', 'discovery', 'universe', 'backtest', 'settings', 'packages'):
         from cli.main import main as cli_main
         cli_main(sys.argv[1:])
         return

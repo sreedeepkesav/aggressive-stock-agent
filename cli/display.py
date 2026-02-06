@@ -88,11 +88,14 @@ def print_help() -> None:
     web [PORT]          Launch web dashboard (default port 8501)
     ticker <SYMBOL>     Analyze a single stock (regime-aware, 5 engines + timeframe filter)
     scan [N]            Scan watchlist, show top N opportunities (default 10)
+    scan [N] --package <PKG>  Scan a specific package (e.g. sector_semiconductors)
+    packages            List all available watchlist packages (83 packages, ~4000 symbols)
     portfolio show      Show current portfolio state + exit signals
     portfolio stats     Show trade statistics + engine accuracy
     backtest [MONTHS]   Run walk-forward backtest (default 12 months)
     discovery           Discover new opportunities from news + Reddit
     universe update     Refresh stock universes (S&P 500, momentum, value)
+    settings            Change LLM mode, risk parameters (interactive prompt)
     help                Show this help message
 
   Environment Variables (Risk Parameters - all configurable):
@@ -122,6 +125,8 @@ def print_help() -> None:
     python stock_agent.py web 9000          # Launch on custom port
     python stock_agent.py ticker NVDA       # Analyze a stock (regime + 5 engines)
     python stock_agent.py scan 5            # Scan watchlist, show top 5
+    python stock_agent.py scan 10 --package japan  # Scan Japan package
+    python stock_agent.py packages          # List all 83 packages
     python stock_agent.py backtest 12       # 12-month walk-forward backtest
     python stock_agent.py portfolio show    # Portfolio state + exit signals
     python stock_agent.py portfolio stats   # Trade stats + engine accuracy

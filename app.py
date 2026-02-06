@@ -198,13 +198,32 @@ elif page == "Market Scan":
     st.header("Market Scan")
     st.caption("Scan your watchlist with regime-aware analysis")
 
-    col1, col2 = st.columns([3, 1])
-    with col1:
-        top_n = st.slider("Show top N results", min_value=3, max_value=30, value=10)
-    with col2:
-        scan_btn = st.button("Scan Watchlist", type="primary", use_container_width=True)
+    from config.watchlists import list_packages_by_region, PACKAGE_META, get_package_symbols
 
-    if scan_btn:
+    # Package selector - require explicit selection
+    pkg_options = {}
+    for region, pkgs in list_packages_by_region().items():
+        for key, name, count in pkgs:
+            pkg_options[f"{name} ({count} symbols) [{region}]"] = key
+
+    col1, col2 = st.columns([1, 1])
+    with col1:
+        selected_pkg_label = st.selectbox(
+            "Select a package to scan",
+            list(pkg_options.keys()),
+            index=None,
+            placeholder="Choose a package...",
+        )
+    with col2:
+        top_n = st.slider("Show top N results", min_value=3, max_value=30, value=10)
+
+    if not selected_pkg_label:
+        st.info("Select a package above to start scanning. Use the **Packages** page or `python stock_agent.py packages` to browse all 83 packages.")
+
+    scan_btn = st.button("Scan", type="primary", use_container_width=True, disabled=not selected_pkg_label)
+
+    if scan_btn and selected_pkg_label:
+        selected_pkg = pkg_options[selected_pkg_label]
         from portfolio.memory import get_adaptive_weights, check_outcomes
         check_outcomes()
         adaptive_weights = get_adaptive_weights()
@@ -218,7 +237,8 @@ elif page == "Market Scan":
                 f"Breadth: {regime.breadth_pct:.0%} | SPY: {regime.spy_trend}")
 
         signals = []
-        watchlist = settings.watchlist
+        watchlist = get_package_symbols([selected_pkg])
+        st.caption(f"Scanning: **{PACKAGE_META.get(selected_pkg, {}).get('name', selected_pkg)}** ({len(watchlist)} symbols)")
 
         for i, sym in enumerate(watchlist):
             try:
@@ -418,23 +438,33 @@ elif page == "Backtest":
     st.header("Backtesting")
     st.caption("Walk-forward backtest to validate the system")
 
-    col1, col2, col3 = st.columns([2, 2, 1])
+    from config.watchlists import list_packages_by_region, PACKAGE_META, get_package_symbols as bt_get_pkg_symbols
+
+    bt_pkg_options = {}
+    for region, pkgs in list_packages_by_region().items():
+        for key, name, count in pkgs:
+            bt_pkg_options[f"{name} ({count} symbols) [{region}]"] = key
+
+    col1, col2 = st.columns([1, 1])
     with col1:
         months = st.slider("Backtest Period (months)", min_value=3, max_value=24, value=12)
     with col2:
-        symbols_option = st.selectbox("Symbols", ["Full Watchlist", "Top 10 Only", "Custom"])
-    with col3:
-        run_btn = st.button("Run Backtest", type="primary", use_container_width=True)
+        symbols_option = st.selectbox("Symbols", ["Select Package", "Custom"])
 
     if symbols_option == "Custom":
         custom_syms = st.text_input("Enter symbols (comma-separated)", value="NVDA,AAPL,MSFT,TSLA,AMD")
         symbols = [s.strip().upper() for s in custom_syms.split(",") if s.strip()]
-    elif symbols_option == "Top 10 Only":
-        symbols = settings.watchlist[:10]
     else:
-        symbols = settings.watchlist
+        bt_pkg_label = st.selectbox("Package", list(bt_pkg_options.keys()), index=None,
+                                     placeholder="Choose a package...", key="bt_pkg")
+        if bt_pkg_label:
+            symbols = bt_get_pkg_symbols([bt_pkg_options[bt_pkg_label]])
+        else:
+            symbols = []
 
-    if run_btn:
+    run_btn = st.button("Run Backtest", type="primary", use_container_width=True, disabled=len(symbols) == 0)
+
+    if run_btn and symbols:
         from portfolio.backtest import run_backtest, format_backtest_report
 
         with st.spinner(f"Running backtest on {len(symbols)} symbols for {months} months..."):
@@ -528,48 +558,171 @@ elif page == "Discovery":
 # ============================================================
 elif page == "Settings":
     st.header("Settings")
-    st.caption("Current risk parameters (configure via environment variables)")
 
-    params = settings.risk
+    env_path = os.path.join(os.path.dirname(__file__), ".env")
 
+    def _read_env_file():
+        """Read .env file into a dict (preserves comments as None values)."""
+        vals = {}
+        if os.path.exists(env_path):
+            with open(env_path) as f:
+                for line in f:
+                    line = line.strip()
+                    if line and not line.startswith("#") and "=" in line:
+                        key, _, val = line.partition("=")
+                        vals[key.strip()] = val.strip()
+        return vals
+
+    def _write_env(updates: dict):
+        """Update .env file, preserving comments and adding new keys."""
+        lines = []
+        if os.path.exists(env_path):
+            with open(env_path) as f:
+                lines = f.readlines()
+
+        updated_keys = set()
+        new_lines = []
+        for line in lines:
+            stripped = line.strip()
+            if stripped and not stripped.startswith("#") and "=" in stripped:
+                key = stripped.partition("=")[0].strip()
+                if key in updates:
+                    new_lines.append(f"{key}={updates[key]}\n")
+                    updated_keys.add(key)
+                else:
+                    new_lines.append(line)
+            else:
+                new_lines.append(line)
+
+        for key, val in updates.items():
+            if key not in updated_keys:
+                new_lines.append(f"{key}={val}\n")
+
+        with open(env_path, "w") as f:
+            f.writelines(new_lines)
+
+    # --- LLM Configuration ---
+    st.subheader("LLM Configuration")
+    llm_modes = {"off - $0/month (algorithmic only)": "off",
+                 "haiku - ~$0.0003/run (AI summaries)": "haiku",
+                 "sonnet - ~$0.01/run (deep AI analysis)": "sonnet"}
+    current_mode = settings.llm_mode.value
+    current_label = [k for k, v in llm_modes.items() if v == current_mode][0]
+
+    selected_label = st.selectbox("LLM Mode", list(llm_modes.keys()),
+                                  index=list(llm_modes.keys()).index(current_label))
+    selected_mode = llm_modes[selected_label]
+
+    api_key_val = settings.anthropic_api_key or ""
+    if selected_mode != "off":
+        api_key_val = st.text_input("Anthropic API Key", value=api_key_val, type="password",
+                                    help="Required for haiku/sonnet modes")
+
+    if st.button("Save LLM Settings"):
+        updates = {"LLM_MODE": selected_mode}
+        if selected_mode != "off" and api_key_val:
+            updates["ANTHROPIC_API_KEY"] = api_key_val
+        _write_env(updates)
+        st.success(f"Saved LLM_MODE={selected_mode}. Restart the app to apply.")
+
+    st.divider()
+
+    # --- Risk Parameters ---
     st.subheader("Risk Parameters")
+    params = settings.risk
 
     col1, col2 = st.columns(2)
     with col1:
-        st.markdown("| Parameter | Value |")
-        st.markdown("|-----------|-------|")
-        st.markdown(f"| Max Position Size | `{params.max_position_pct:.0%}` |")
-        st.markdown(f"| Max Portfolio Heat | `{params.max_portfolio_heat:.0%}` |")
-        st.markdown(f"| Drawdown Circuit Breaker | `{params.drawdown_circuit_breaker:.0%}` |")
-        st.markdown(f"| Max Simultaneous Positions | `{params.max_simultaneous_positions}` |")
-        st.markdown(f"| Max Sector Concentration | `{params.max_sector_concentration:.0%}` |")
+        new_max_pos = st.slider("Max Position Size", 0.01, 0.50, params.max_position_pct,
+                                0.01, format="%.0f%%",
+                                help="Max allocation per position")
+        new_heat = st.slider("Max Portfolio Heat", 0.01, 0.30, params.max_portfolio_heat,
+                             0.01, format="%.0f%%",
+                             help="Max total portfolio risk")
+        new_dd = st.slider("Drawdown Circuit Breaker", -0.50, -0.01,
+                           params.drawdown_circuit_breaker, 0.01, format="%.0f%%",
+                           help="Stop trading at this drawdown from peak")
+        new_max_pos_count = st.number_input("Max Simultaneous Positions", 1, 20,
+                                            params.max_simultaneous_positions)
+        new_sector = st.slider("Max Sector Concentration", 0.10, 1.00,
+                               params.max_sector_concentration, 0.05, format="%.0f%%",
+                               help="Max allocation to one sector")
 
     with col2:
-        st.markdown("| Parameter | Value |")
-        st.markdown("|-----------|-------|")
-        st.markdown(f"| Cash Reserve | `{params.cash_reserve_pct:.0%}` |")
-        st.markdown(f"| Max Daily Risk | `{params.max_daily_risk:.0%}` |")
-        st.markdown(f"| Min Profit Target | `{params.min_profit_target:.0%}` |")
-        st.markdown(f"| Stop Loss ATR (Swing) | `{params.stop_loss_atr_swing}` |")
-        st.markdown(f"| Stop Loss ATR (Position) | `{params.stop_loss_atr_position}` |")
+        new_cash = st.slider("Cash Reserve", 0.0, 0.50, params.cash_reserve_pct,
+                             0.05, format="%.0f%%",
+                             help="Minimum cash reserve")
+        new_daily = st.slider("Max Daily Risk", 0.01, 0.20, params.max_daily_risk,
+                              0.01, format="%.0f%%")
+        new_profit = st.slider("Min Profit Target", 0.01, 0.50, params.min_profit_target,
+                               0.01, format="%.0f%%")
+        new_atr_swing = st.number_input("Stop Loss ATR (Swing)", 0.5, 5.0,
+                                        params.stop_loss_atr_swing, 0.1)
+        new_atr_pos = st.number_input("Stop Loss ATR (Position)", 0.5, 5.0,
+                                      params.stop_loss_atr_position, 0.1)
 
-    st.subheader("How to Change")
-    st.code("""# Option 1: Set env vars before running
-MAX_POSITION_PCT=0.15 MAX_SIMULTANEOUS_POSITIONS=3 streamlit run app.py
+    if st.button("Save Risk Parameters"):
+        _write_env({
+            "MAX_POSITION_PCT": f"{new_max_pos:.2f}",
+            "MAX_PORTFOLIO_HEAT": f"{new_heat:.2f}",
+            "DRAWDOWN_CIRCUIT_BREAKER": f"{new_dd:.2f}",
+            "MAX_SIMULTANEOUS_POSITIONS": str(int(new_max_pos_count)),
+            "MAX_SECTOR_CONCENTRATION": f"{new_sector:.2f}",
+            "CASH_RESERVE_PCT": f"{new_cash:.2f}",
+            "MAX_DAILY_RISK": f"{new_daily:.2f}",
+            "MIN_PROFIT_TARGET": f"{new_profit:.2f}",
+            "STOP_LOSS_ATR_SWING": f"{new_atr_swing:.1f}",
+            "STOP_LOSS_ATR_POSITION": f"{new_atr_pos:.1f}",
+        })
+        st.success("Risk parameters saved. Restart the app to apply.")
 
-# Option 2: Add to .env file
-echo "MAX_POSITION_PCT=0.15" >> .env
-echo "MAX_SIMULTANEOUS_POSITIONS=3" >> .env""", language="bash")
+    st.divider()
 
-    st.subheader("LLM Configuration")
-    st.markdown(f"**Current Mode:** `{settings.llm_mode.value}`")
-    st.markdown("""
-| Mode | Cost | How to set |
-|------|------|-----------|
-| `off` (default) | $0/month | `LLM_MODE=off` |
-| `haiku` | ~$0.0003/run | `LLM_MODE=haiku` (needs `ANTHROPIC_API_KEY`) |
-| `sonnet` | ~$0.01/run | `LLM_MODE=sonnet` (needs `ANTHROPIC_API_KEY`) |
-""")
+    # --- API Keys ---
+    st.subheader("API Keys")
+    st.caption("Keys are saved to .env (gitignored, never committed)")
 
-    st.subheader("Watchlist")
-    st.write(", ".join(settings.watchlist))
+    new_anthropic = st.text_input("Anthropic API Key", value=settings.anthropic_api_key,
+                                  type="password", help="For LLM modes (haiku/sonnet)")
+    new_sec = st.text_input("SEC API Key", value=settings.sec_api_key,
+                            type="password", help="Free at https://sec-api.io/")
+    col_r1, col_r2 = st.columns(2)
+    with col_r1:
+        new_reddit_id = st.text_input("Reddit Client ID", value=settings.reddit_client_id,
+                                      type="password", help="https://www.reddit.com/prefs/apps")
+    with col_r2:
+        new_reddit_secret = st.text_input("Reddit Client Secret", value=settings.reddit_client_secret,
+                                          type="password")
+    new_av = st.text_input("Alpha Vantage API Key", value=settings.alpha_vantage_api_key,
+                           type="password", help="Free at https://www.alphavantage.co/support/#api-key")
+    col_a1, col_a2 = st.columns(2)
+    with col_a1:
+        new_avanza_user = st.text_input("Avanza Username", value=settings.avanza_username,
+                                        help="Optional - for auto-trading")
+    with col_a2:
+        new_avanza_pass = st.text_input("Avanza Password", value=settings.avanza_password,
+                                        type="password")
+
+    if st.button("Save API Keys"):
+        key_updates = {}
+        if new_anthropic: key_updates["ANTHROPIC_API_KEY"] = new_anthropic
+        if new_sec: key_updates["SEC_API_KEY"] = new_sec
+        if new_reddit_id: key_updates["REDDIT_CLIENT_ID"] = new_reddit_id
+        if new_reddit_secret: key_updates["REDDIT_CLIENT_SECRET"] = new_reddit_secret
+        if new_av: key_updates["ALPHA_VANTAGE_API_KEY"] = new_av
+        if new_avanza_user: key_updates["AVANZA_USERNAME"] = new_avanza_user
+        if new_avanza_pass: key_updates["AVANZA_PASSWORD"] = new_avanza_pass
+        if key_updates:
+            _write_env(key_updates)
+            st.success(f"Saved {len(key_updates)} API key(s). Restart the app to apply.")
+        else:
+            st.info("No keys to save (all fields empty).")
+
+    st.divider()
+
+    # --- Packages ---
+    st.subheader("Active Packages")
+    from config.watchlists import get_total_symbol_count, WATCHLIST_PACKAGES
+    st.write(f"**Active:** {', '.join(settings.active_packages)} ({len(settings.watchlist)} symbols)")
+    st.write(f"**Total available:** {len(WATCHLIST_PACKAGES)} packages, {get_total_symbol_count()} symbols")
+    st.caption("Set `ACTIVE_PACKAGES` in .env to change default packages. Scans always prompt for package selection.")

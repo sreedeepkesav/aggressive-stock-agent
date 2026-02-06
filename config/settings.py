@@ -48,34 +48,49 @@ class RiskParams:
         )
 
 
+def _load_active_packages() -> List[str]:
+    """Load active package names from env or return defaults."""
+    from config.watchlists import DEFAULT_ACTIVE_PACKAGES
+    env_val = os.getenv("ACTIVE_PACKAGES", "")
+    if env_val.strip():
+        return [p.strip() for p in env_val.split(",") if p.strip()]
+    return DEFAULT_ACTIVE_PACKAGES
+
+
+def _build_watchlist(packages: List[str]) -> List[str]:
+    """Build deduplicated watchlist from active packages."""
+    from config.watchlists import get_package_symbols
+    return get_package_symbols(packages)
+
+
 @dataclass
 class Settings:
     """Top-level application settings."""
     risk: RiskParams = field(default_factory=RiskParams.from_env)
     llm_mode: LLMMode = field(default_factory=lambda: LLMMode(os.getenv("LLM_MODE", "off")))
 
-    # API keys (only those actually used)
+    # API keys
     anthropic_api_key: str = field(default_factory=lambda: os.getenv("ANTHROPIC_API_KEY", ""))
+    sec_api_key: str = field(default_factory=lambda: os.getenv("SEC_API_KEY", ""))
+    reddit_client_id: str = field(default_factory=lambda: os.getenv("REDDIT_CLIENT_ID", ""))
+    reddit_client_secret: str = field(default_factory=lambda: os.getenv("REDDIT_CLIENT_SECRET", ""))
+    alpha_vantage_api_key: str = field(default_factory=lambda: os.getenv("ALPHA_VANTAGE_API_KEY", ""))
     avanza_username: str = field(default_factory=lambda: os.getenv("AVANZA_USERNAME", ""))
     avanza_password: str = field(default_factory=lambda: os.getenv("AVANZA_PASSWORD", ""))
     avanza_totp_secret: str = field(default_factory=lambda: os.getenv("AVANZA_TOTP_SECRET", ""))
 
-    # Default watchlist
-    watchlist: List[str] = field(default_factory=lambda: [
-        # AI & Semiconductor
-        "NVDA", "AMD", "SMCI", "AVGO", "ARM", "TSM", "MRVL", "QCOM",
-        # Big Tech
-        "AAPL", "MSFT", "GOOGL", "META", "AMZN",
-        # Growth & Momentum
-        "TSLA", "PLTR", "NET", "CRWD", "SNOW", "DDOG",
-        # Fintech
-        "COIN", "SQ", "HOOD", "SOFI", "UPST", "AFRM",
-        # Biotech
-        "MRNA", "BNTX", "REGN", "GILD", "VRTX",
-    ])
+    # Active packages (determines watchlist)
+    active_packages: List[str] = field(default_factory=_load_active_packages)
+
+    # Watchlist built from active packages
+    watchlist: List[str] = field(default=None)
 
     # Cache settings
     cache_ttl_seconds: int = field(default_factory=lambda: int(os.getenv("CACHE_TTL_SECONDS", "300")))
+
+    def __post_init__(self):
+        if self.watchlist is None:
+            self.watchlist = _build_watchlist(self.active_packages)
 
     @classmethod
     def load(cls) -> "Settings":
