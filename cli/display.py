@@ -86,10 +86,11 @@ def print_help() -> None:
 
   Modes:
     web [PORT]          Launch web dashboard (default port 8501)
-    ticker <SYMBOL>     Analyze a single stock (runs all 5 engines + signal combiner)
+    ticker <SYMBOL>     Analyze a single stock (regime-aware, 5 engines + timeframe filter)
     scan [N]            Scan watchlist, show top N opportunities (default 10)
-    portfolio show      Show current portfolio state
-    portfolio stats     Show trade statistics
+    portfolio show      Show current portfolio state + exit signals
+    portfolio stats     Show trade statistics + engine accuracy
+    backtest [MONTHS]   Run walk-forward backtest (default 12 months)
     discovery           Discover new opportunities from news + Reddit
     universe update     Refresh stock universes (S&P 500, momentum, value)
     help                Show this help message
@@ -109,11 +110,20 @@ def print_help() -> None:
     CACHE_TTL_SECONDS         Data cache TTL (default: 300)
     LOG_LEVEL                 Logging level (default: INFO)
 
+  Signal Flow:
+    1. Market regime detected (SPY/VIX/breadth -> weight adjustment)
+    2. Each of 5 engines analyzes the stock independently
+    3. Signals combined with regime-adjusted + adaptive weights
+    4. Weekly timeframe filter confirms or demotes signal
+    5. Analysis saved for learning (outcomes checked after 5+ days)
+
   Examples:
     python stock_agent.py web               # Launch web dashboard
     python stock_agent.py web 9000          # Launch on custom port
-    python stock_agent.py ticker NVDA       # Terminal: analyze a stock
-    python stock_agent.py scan 5            # Terminal: scan watchlist
-    python stock_agent.py portfolio show    # Terminal: portfolio state
+    python stock_agent.py ticker NVDA       # Analyze a stock (regime + 5 engines)
+    python stock_agent.py scan 5            # Scan watchlist, show top 5
+    python stock_agent.py backtest 12       # 12-month walk-forward backtest
+    python stock_agent.py portfolio show    # Portfolio state + exit signals
+    python stock_agent.py portfolio stats   # Trade stats + engine accuracy
     MAX_POSITION_PCT=0.15 python stock_agent.py ticker AAPL
 """)

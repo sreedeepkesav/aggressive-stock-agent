@@ -1,12 +1,10 @@
 """Signal combiner: weighted combination of all engine results into actual trade decisions.
 
-This is the critical piece that was MISSING from the original codebase.
-Previously, engines ran and printed output but their results were never
-combined into actionable buy/sell decisions.
+Now regime-aware: uses market regime to adjust engine weights and filter dangerous conditions.
 """
 
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Dict, List, Optional
 
 from engines.base import BaseEngine, EngineResult
@@ -15,10 +13,11 @@ from engines.technical import TechnicalEngine
 from engines.sector import SectorEngine
 from engines.mean_reversion import MeanReversionEngine
 from engines.fundamental import FundamentalEngine
+from engines.regime import MarketRegime, RegimeInfo, detect_regime, REGIME_WEIGHTS
 
 logger = logging.getLogger("stock_agent")
 
-# Default engine weights (sum to 1.0)
+# Default engine weights (sum to 1.0) - used when regime is UNKNOWN
 DEFAULT_WEIGHTS: Dict[str, float] = {
     "momentum": 0.25,
     "fundamental": 0.25,
@@ -38,6 +37,7 @@ class CombinedSignal:
     engine_results: Dict[str, EngineResult]
     reasons: List[str]
     agreement_pct: float   # What fraction of engines agree on direction
+    regime: Optional[RegimeInfo] = field(default=None, repr=False)
 
     @property
     def is_actionable(self) -> bool:
@@ -46,10 +46,14 @@ class CombinedSignal:
 
 
 class SignalCombiner:
-    """Runs all engines and combines their signals into a single trade decision."""
+    """Runs all engines and combines their signals into a single trade decision.
 
-    def __init__(self, weights: Optional[Dict[str, float]] = None):
-        self.weights = weights or DEFAULT_WEIGHTS.copy()
+    Now regime-aware: detects market regime and adjusts weights accordingly.
+    """
+
+    def __init__(self, weights: Optional[Dict[str, float]] = None, regime_info: Optional[RegimeInfo] = None):
+        self.default_weights = weights or DEFAULT_WEIGHTS.copy()
+        self._regime_info = regime_info  # Can be injected or auto-detected
         self.engines: Dict[str, BaseEngine] = {
             "momentum": MomentumEngine(),
             "technical": TechnicalEngine(),
@@ -58,14 +62,47 @@ class SignalCombiner:
             "fundamental": FundamentalEngine(),
         }
 
-    def analyze(self, symbol: str) -> CombinedSignal:
-        """Run all engines and produce a combined signal."""
+    @property
+    def regime_info(self) -> RegimeInfo:
+        """Lazy-detect regime on first access."""
+        if self._regime_info is None:
+            self._regime_info = detect_regime()
+        return self._regime_info
+
+    def get_active_weights(self, adaptive_weights: Optional[Dict[str, float]] = None) -> Dict[str, float]:
+        """Get effective weights: adaptive (if available) blended with regime weights."""
+        regime_weights = self.regime_info.weights
+
+        if adaptive_weights:
+            # Blend: 70% adaptive + 30% regime
+            blended = {}
+            for key in DEFAULT_WEIGHTS:
+                adaptive_w = adaptive_weights.get(key, DEFAULT_WEIGHTS[key])
+                regime_w = regime_weights.get(key, DEFAULT_WEIGHTS[key])
+                blended[key] = adaptive_w * 0.7 + regime_w * 0.3
+            # Normalize
+            total = sum(blended.values())
+            if total > 0:
+                blended = {k: v / total for k, v in blended.items()}
+            return blended
+
+        return regime_weights
+
+    def analyze(self, symbol: str, adaptive_weights: Optional[Dict[str, float]] = None) -> CombinedSignal:
+        """Run all engines and produce a combined signal with regime awareness."""
+        regime = self.regime_info
+        weights = self.get_active_weights(adaptive_weights)
+
         results: Dict[str, EngineResult] = {}
         all_reasons = []
 
         for name, engine in self.engines.items():
             try:
-                result = engine.analyze(symbol)
+                # Pass regime to mean_reversion engine
+                if name == "mean_reversion":
+                    result = engine.analyze(symbol, regime=regime.regime.value)
+                else:
+                    result = engine.analyze(symbol)
                 results[name] = result
                 if result.reasons:
                     prefix = name.replace("_", " ").title()
@@ -83,7 +120,7 @@ class SignalCombiner:
         for name, result in results.items():
             if result.signal == "NO_DATA":
                 continue
-            w = self.weights.get(name, 0.0)
+            w = weights.get(name, 0.0)
             weighted_sum += result.numeric_signal * w * result.confidence
             weight_sum += w
             confidence_sum += result.confidence * w
@@ -110,6 +147,18 @@ class SignalCombiner:
             avg_confidence *= 0.6
             combined_score *= 0.5
 
+        # Apply regime confidence multiplier (SPY crash dampening, VIX elevation)
+        avg_confidence *= regime.confidence_multiplier
+
+        # Regime market filter: block buys when VIX > 35
+        if regime.block_buys and combined_score > 0:
+            combined_score *= 0.3
+            avg_confidence *= 0.4
+            all_reasons.insert(0, f"[Regime] VIX {regime.vix_level:.0f} - buy signals dampened")
+
+        # Add regime info to reasons
+        all_reasons.insert(0, f"[Regime] {regime.regime.value} (VIX {regime.vix_level:.1f}, breadth {regime.breadth_pct:.0%})")
+
         # Map combined score to action
         if combined_score >= 0.6:
             action = "STRONG_BUY"
@@ -128,16 +177,17 @@ class SignalCombiner:
             combined_score=round(combined_score, 4),
             confidence=round(avg_confidence, 4),
             engine_results=results,
-            reasons=all_reasons[:10],
+            reasons=all_reasons[:12],
             agreement_pct=round(agreement_pct, 2),
+            regime=regime,
         )
 
-    def analyze_multiple(self, symbols: List[str]) -> List[CombinedSignal]:
+    def analyze_multiple(self, symbols: List[str], adaptive_weights: Optional[Dict[str, float]] = None) -> List[CombinedSignal]:
         """Analyze multiple symbols and return sorted by combined score."""
         signals = []
         for sym in symbols:
             try:
-                sig = self.analyze(sym)
+                sig = self.analyze(sym, adaptive_weights=adaptive_weights)
                 signals.append(sig)
             except Exception as e:
                 logger.error(f"Failed to analyze {sym}: {e}")

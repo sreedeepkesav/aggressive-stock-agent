@@ -16,6 +16,14 @@ venv_new/
 # Cache
 universe_cache.json
 
+# Database
+portfolio.db
+*.db-wal
+*.db-shm
+
+# Logs
+logs/
+
 # IDE
 .vscode/
 .idea/

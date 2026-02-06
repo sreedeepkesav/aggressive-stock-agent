@@ -67,6 +67,53 @@ def calculate_obv(close: pd.Series, volume: pd.Series) -> pd.Series:
     return pd.Series(direction, index=close.index).cumsum()
 
 
+def calculate_stochastic(df: pd.DataFrame, k_period: int = 14, d_period: int = 3):
+    """Stochastic Oscillator (%K, %D). Better than RSI at extremes."""
+    lowest_low = df["Low"].rolling(window=k_period).min()
+    highest_high = df["High"].rolling(window=k_period).max()
+    denom = highest_high - lowest_low
+    pct_k = 100 * (df["Close"] - lowest_low) / denom.replace(0, np.nan)
+    pct_d = pct_k.rolling(window=d_period).mean()
+    return pct_k, pct_d
+
+
+def calculate_vwap(df: pd.DataFrame) -> pd.Series:
+    """Volume Weighted Average Price (intraday/daily reset approximation)."""
+    typical_price = (df["High"] + df["Low"] + df["Close"]) / 3
+    cumulative_tp_vol = (typical_price * df["Volume"]).cumsum()
+    cumulative_vol = df["Volume"].cumsum()
+    return cumulative_tp_vol / cumulative_vol.replace(0, np.nan)
+
+
+def calculate_roc(prices: pd.Series, period: int = 12) -> pd.Series:
+    """Rate of Change (momentum quality)."""
+    return (prices / prices.shift(period) - 1) * 100
+
+
+def calculate_bb_pctb(prices: pd.Series, window: int = 20, num_std: float = 2.0) -> pd.Series:
+    """Bollinger %B: where price sits in the bands (0-1 scale, can exceed)."""
+    upper, middle, lower = calculate_bollinger_bands(prices, window, num_std)
+    band_width = upper - lower
+    return (prices - lower) / band_width.replace(0, np.nan)
+
+
+def calculate_keltner_channels(df: pd.DataFrame, ema_period: int = 20, atr_period: int = 14, multiplier: float = 1.5):
+    """Keltner Channels (EMA +/- ATR*multiplier). Upper, middle, lower."""
+    middle = calculate_ema(df["Close"], ema_period)
+    atr = calculate_atr(df, atr_period)
+    upper = middle + (atr * multiplier)
+    lower = middle - (atr * multiplier)
+    return upper, middle, lower
+
+
+def calculate_adl(df: pd.DataFrame) -> pd.Series:
+    """Accumulation/Distribution Line."""
+    high_low = df["High"] - df["Low"]
+    clv = ((df["Close"] - df["Low"]) - (df["High"] - df["Close"])) / high_low.replace(0, np.nan)
+    clv = clv.fillna(0)
+    return (clv * df["Volume"]).cumsum()
+
+
 def add_all_indicators(df: pd.DataFrame) -> pd.DataFrame:
     """Add all standard technical indicators to a DataFrame with OHLCV columns.
 
@@ -96,6 +143,22 @@ def add_all_indicators(df: pd.DataFrame) -> pd.DataFrame:
 
     # Volatility
     df["ATR"] = calculate_atr(df, 14)
-    df["BB_Upper"], _, df["BB_Lower"] = calculate_bollinger_bands(close)
+    df["BB_Upper"], df["BB_Middle"], df["BB_Lower"] = calculate_bollinger_bands(close)
+    df["BB_PctB"] = calculate_bb_pctb(close)
+
+    # Stochastic
+    df["Stoch_K"], df["Stoch_D"] = calculate_stochastic(df)
+
+    # Rate of Change
+    df["ROC_12"] = calculate_roc(close, 12)
+
+    # VWAP
+    df["VWAP"] = calculate_vwap(df)
+
+    # Keltner Channels
+    df["Keltner_Upper"], df["Keltner_Middle"], df["Keltner_Lower"] = calculate_keltner_channels(df)
+
+    # Accumulation/Distribution
+    df["ADL"] = calculate_adl(df)
 
     return df

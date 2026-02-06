@@ -1,6 +1,6 @@
 # Stock Analysis Agent
 
-A modular, professional stock analysis tool with 5 analysis engines, signal combination, risk management, and portfolio tracking. Runs locally, costs $0/month by default.
+A modular, quantitative stock analysis tool with 5 analysis engines, market regime detection, adaptive learning, backtesting, and risk management. Runs locally, costs $0/month by default.
 
 **This is NOT financial advice.** This tool is for educational and research purposes only. No guarantees of returns.
 
@@ -31,23 +31,26 @@ python stock_agent.py web          # Opens browser at http://localhost:8501
 python stock_agent.py web 9000     # Custom port
 ```
 
-The dashboard has 5 pages:
+The dashboard has 7 pages:
 
 | Page | Description |
 |------|-------------|
-| **Ticker Analysis** | Enter a symbol, runs all 5 engines, shows combined signal + risk check |
-| **Market Scan** | Scans watchlist with progress bar, ranked table of opportunities |
-| **Portfolio** | Positions, cash, drawdown, trade history, Sharpe ratio, vs SPY |
+| **Ticker Analysis** | Regime-aware analysis across 5 engines + multi-timeframe confirmation |
+| **Market Scan** | Scans watchlist with regime-adjusted weights, ranked by combined score |
+| **Portfolio** | Positions, cash, drawdown, trade history, exit signals |
+| **Engine Performance** | Per-engine accuracy tracking, adaptive weights, analysis history |
+| **Backtest** | Walk-forward backtesting with equity curve, Sharpe, vs SPY |
 | **Discovery** | Reddit trending tickers + RSS news feed |
 | **Settings** | Current risk parameters, LLM config, watchlist |
 
 ## Terminal CLI
 
 ```bash
-python stock_agent.py ticker NVDA       # Full analysis (5 engines + signal combiner)
+python stock_agent.py ticker NVDA       # Full analysis (regime + 5 engines + timeframe filter)
 python stock_agent.py scan 5            # Scan watchlist, show top 5 opportunities
-python stock_agent.py portfolio show    # Portfolio state (positions, cash, drawdown)
-python stock_agent.py portfolio stats   # Trade statistics (Sharpe, win rate, vs SPY)
+python stock_agent.py portfolio show    # Portfolio state + active exit signals
+python stock_agent.py portfolio stats   # Trade statistics + engine accuracy
+python stock_agent.py backtest 12       # Walk-forward backtest over 12 months
 python stock_agent.py discovery         # Discover tickers from news + Reddit
 python stock_agent.py universe update   # Refresh S&P 500 / momentum / value lists
 python stock_agent.py help              # Full help with all env vars
@@ -59,13 +62,14 @@ Legacy modes (`screen`, `watchlist`, `discover`, `auto`) remain available for ba
 
 ```
 stock_agent.py          # Entry point (routes to web or cli)
-app.py                  # Streamlit web dashboard
+app.py                  # Streamlit web dashboard (7 pages)
 config/
   settings.py           # All configurable parameters (risk, LLM, watchlist)
   logging_config.py     # Structured logging with file rotation
 data/
-  indicators.py         # ONE canonical RSI, SMA, ATR, MACD, BB, OBV
-  market_data.py        # yfinance wrapper with TTL cache
+  indicators.py         # 13 indicators: RSI, SMA, ATR, MACD, BB, OBV, Stochastic,
+                        #   VWAP, ROC, BB%B, Keltner Channels, ADL
+  market_data.py        # yfinance wrapper with TTL cache + weekly data
   cache.py              # In-memory TTL cache (eliminates redundant API calls)
   news.py               # RSS + yfinance news with deduplication
   sec_edgar.py          # Free SEC EDGAR API (no paid keys needed)
@@ -73,37 +77,105 @@ data/
   universe.py           # S&P 500, momentum, value stock lists
 engines/
   base.py               # EngineResult dataclass + BaseEngine ABC
-  momentum.py           # Volume surge, trend structure, RSI/MACD confluence
-  technical.py          # Chart patterns, S/R breakouts, MA crossovers, BB squeezes
-  sector.py             # Sector ETF momentum, relative strength vs SPY
-  mean_reversion.py     # Oversold/overbought extremes, price deviation from SMA200
-  fundamental.py        # ROE, margins, growth, debt, valuation scoring
-  signal_combiner.py    # Weighted combination of all engines -> trade decision
+  regime.py             # Market regime detection (SPY, VIX, sector breadth)
+  momentum.py           # RSI divergence, MACD crossovers, OBV trend, stochastic
+  technical.py          # Market structure (HH/HL), false breakout traps, VWAP, Keltner
+  sector.py             # Sector ranking (11 sectors), true relative strength, correlation
+  mean_reversion.py     # Regime-gated, detrended deviation, exhaustion detection
+  fundamental.py        # Sector-relative P/E, ROIC, earnings quality, PEG weighting
+  signal_combiner.py    # Regime-aware weighted combination -> trade decision
+  timeframe.py          # Multi-timeframe weekly confirmation filter
 portfolio/
   models.py             # Position, Trade, Order dataclasses
-  state.py              # SQLite persistence (portfolio.db)
-  risk.py               # Position limits, drawdown breaker, sector caps
+  state.py              # SQLite persistence (portfolio.db) + learning tables
+  risk.py               # Position limits, drawdown breaker, sector caps, exit signals
   tracker.py            # Sharpe ratio, win rate, max drawdown, vs SPY
+  exits.py              # Trailing stops, staged profit taking (2R/3R/5R), time exits
+  memory.py             # Learning system: save analyses, check outcomes, adaptive weights
+  backtest.py           # Walk-forward backtesting framework
 cli/
   main.py               # argparse entry point
   display.py            # All formatting and display functions
 connectors/
   base.py               # Abstract BrokerConnector interface
   paper.py              # Paper trading (SQLite-backed)
-tests/                  # pytest test suite (32 tests)
+tests/                  # pytest test suite (71 tests)
 ```
+
+## Signal Flow
+
+```
+1. detect_regime()           SPY/VIX/breadth -> TRENDING_UP | TRENDING_DOWN | RANGE_BOUND | HIGH_VOLATILITY
+2. engine.analyze()          Each of 5 engines produces EngineResult (signal + confidence + reasons)
+3. SignalCombiner.analyze()  Regime-adjusted weights + adaptive weights -> CombinedSignal
+4. apply_timeframe_filter()  Weekly trend confirms or demotes daily signal
+5. memory.save_analysis()    Save to SQLite for learning
+6. memory.check_outcomes()   Fill actual returns after 5+ days -> per-engine accuracy
+7. memory.get_adaptive_weights()  Adjust engine weights based on what's actually working
+```
+
+## Market Regime Detection
+
+The system classifies market conditions using SPY, VIX, and sector breadth, then adjusts engine weights accordingly:
+
+| Regime | Condition | Momentum | Fundamental | Technical | Sector | Mean Rev |
+|--------|-----------|----------|-------------|-----------|--------|----------|
+| **Trending Up** | SPY > SMA50 > SMA200, VIX < 25, breadth > 60% | 30% | 20% | 25% | 15% | 10% |
+| **Trending Down** | SPY < SMA50 < SMA200, VIX > 20 | 10% | 30% | 15% | 15% | 30% |
+| **Range Bound** | Low SMA50 slope, mixed breadth | 15% | 25% | 20% | 10% | 30% |
+| **High Volatility** | VIX > 30 or realized vol spike | 10% | 30% | 10% | 20% | 30% |
+
+**Market filters:**
+- VIX > 35: all new BUY signals blocked
+- SPY down > 3% same day: all confidence reduced by 50%
 
 ## Analysis Engines
 
-| Engine | Weight | What it does |
-|--------|--------|-------------|
-| Momentum | 25% | Volume surges, trend structure, RSI/MACD confluence, volatility expansion |
-| Fundamental | 25% | Profitability, growth, financial health, valuation, efficiency scoring |
-| Technical | 20% | S/R breakouts, chart patterns (triangles), MA crossovers, BB squeezes |
-| Sector | 15% | Sector ETF momentum, relative strength vs SPY, sector flow analysis |
-| Mean Reversion | 15% | Price deviation from SMA200, RSI/BB extremes, volume divergence |
+| Engine | Default Weight | Key Techniques |
+|--------|---------------|----------------|
+| **Momentum** | 25% | RSI divergence detection, MACD signal crossovers, stochastic RSI, OBV trend, rate of change, relative RSI thresholds |
+| **Fundamental** | 25% | Sector-relative P/E (vs sector median), forward P/E, ROIC, earnings quality (OCF > NI), PEG-weighted growth scoring |
+| **Technical** | 20% | Market structure (HH/HL), false breakout traps, VWAP as dynamic S/R, ATR-scaled thresholds, Keltner squeeze, BB %B |
+| **Sector** | 15% | Sector ranking (top 4 of 11), true relative strength (stock vs sector ETF), SPY correlation check |
+| **Mean Reversion** | 15% | Regime-gated activation, detrended deviation (linear regression), stochastic extremes with crossovers, capitulation/exhaustion detection |
 
-The **Signal Combiner** takes all 5 engine results, applies configurable weights, handles disagreement (dampening), and produces an actionable trade decision with confidence score.
+## Multi-Timeframe Confirmation
+
+Daily signals are filtered through weekly trend analysis:
+- Daily BUY + weekly downtrend: confidence reduced 40%, may demote to HOLD
+- Daily SELL + weekly uptrend: confidence reduced 40%, may demote to HOLD
+- Daily and weekly agree: confidence boosted 20%
+
+## Learning System
+
+The system improves over time:
+1. Every analysis is saved to SQLite with per-engine signals
+2. After 5+ trading days, actual outcomes are recorded (price return, signal correctness)
+3. Rolling 90-day accuracy is computed per engine
+4. Adaptive weights boost engines above 50% accuracy, reduce those below
+5. Weights blend: 70% adaptive + 30% regime (prevents wild swings, cold-start safe)
+
+## Trailing Stops & Dynamic Exits
+
+| Exit Type | Trigger | Action |
+|-----------|---------|--------|
+| **Trailing Stop** | Price < HWM - ATR * multiplier | Full exit. Multiplier tightens: 2.5 ATR -> 2.0 at 2R -> 1.5 at 3R |
+| **Profit Take (2R)** | Profit = 2x initial risk | Close 33%, move stop to breakeven |
+| **Profit Take (3R)** | Profit = 3x initial risk | Close 33%, tighten stop to 1.5 ATR |
+| **Profit Take (5R)** | Profit = 5x initial risk | Close remaining position |
+| **Time Exit** | Held > 20 trading days, < 2% gain | Full exit (dead money) |
+
+## Backtesting
+
+Walk-forward backtesting validates the system on historical data:
+
+```bash
+python stock_agent.py backtest 12       # 12-month backtest on full watchlist
+```
+
+**Metrics:** Total return, Sharpe ratio, max drawdown, win rate, profit factor, excess return vs SPY.
+
+The web dashboard provides an interactive backtest page with equity curve chart and trade-by-trade breakdown.
 
 ## Risk Parameters
 
@@ -141,7 +213,7 @@ MAX_POSITION_PCT=0.15 MAX_SIMULTANEOUS_POSITIONS=3 python stock_agent.py ticker 
 
 ```bash
 pip install pytest
-python -m pytest tests/ -v
+python -m pytest tests/ -v    # 71 tests
 ```
 
 ## Disclaimer

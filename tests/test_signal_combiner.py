@@ -3,7 +3,8 @@
 import pytest
 
 from engines.base import EngineResult
-from engines.signal_combiner import SignalCombiner, CombinedSignal
+from engines.signal_combiner import SignalCombiner, CombinedSignal, DEFAULT_WEIGHTS
+from engines.regime import RegimeInfo, MarketRegime, REGIME_WEIGHTS
 
 
 class MockEngine:
@@ -17,20 +18,33 @@ class MockEngine:
     def name(self):
         return self._name
 
-    def analyze(self, symbol):
+    def analyze(self, symbol, **kwargs):
         return EngineResult(self._name, symbol, self._signal, self._confidence, ["mock reason"])
 
 
+def _mock_regime(regime=MarketRegime.UNKNOWN):
+    """Create a mock RegimeInfo for testing."""
+    return RegimeInfo(
+        regime=regime, vix_level=20.0, spy_trend="NEUTRAL",
+        breadth_pct=0.5, spy_daily_return=0.0,
+        realized_vol_20d=0.15, realized_vol_60d=0.15,
+        weights=REGIME_WEIGHTS[regime].copy(),
+        confidence_multiplier=1.0, block_buys=False,
+    )
+
+
 class TestSignalCombiner:
-    def _make_combiner(self, engine_configs):
+    def _make_combiner(self, engine_configs, regime=None):
         """Create a combiner with mock engines."""
-        combiner = SignalCombiner()
+        combiner = SignalCombiner(regime_info=regime or _mock_regime())
         combiner.engines = {}
         weights = {}
         for name, signal, conf, weight in engine_configs:
             combiner.engines[name] = MockEngine(name, signal, conf)
             weights[name] = weight
-        combiner.weights = weights
+        combiner.default_weights = weights
+        # Override regime weights to match our test weights
+        combiner._regime_info.weights = weights
         return combiner
 
     def test_unanimous_buy(self):
@@ -59,7 +73,6 @@ class TestSignalCombiner:
             ("c", "HOLD", 0.5, 0.33),
         ])
         sig = combiner.analyze("TEST")
-        # When engines disagree (agreement < 50%), result should be HOLD with reduced confidence
         assert sig.action == "HOLD"
         assert sig.confidence < 0.5
 
@@ -84,3 +97,36 @@ class TestSignalCombiner:
             confidence=0.3, engine_results={}, reasons=[], agreement_pct=0.4,
         )
         assert not sig2.is_actionable
+
+    def test_regime_present_in_signal(self):
+        regime = _mock_regime(MarketRegime.TRENDING_UP)
+        combiner = self._make_combiner([
+            ("a", "BUY", 0.8, 1.0),
+        ], regime=regime)
+        sig = combiner.analyze("TEST")
+        assert sig.regime is not None
+        assert sig.regime.regime == MarketRegime.TRENDING_UP
+
+    def test_block_buys_when_vix_high(self):
+        regime = _mock_regime(MarketRegime.HIGH_VOLATILITY)
+        regime.block_buys = True
+        regime.vix_level = 40.0
+        combiner = self._make_combiner([
+            ("a", "BUY", 0.9, 0.5),
+            ("b", "BUY", 0.8, 0.5),
+        ], regime=regime)
+        sig = combiner.analyze("TEST")
+        # Score should be heavily dampened
+        assert sig.combined_score < 0.2
+        assert sig.confidence < 0.4
+
+    def test_adaptive_weights_blended(self):
+        regime = _mock_regime()
+        combiner = SignalCombiner(regime_info=regime)
+        adaptive = {"momentum": 0.40, "fundamental": 0.10, "technical": 0.20,
+                     "sector": 0.15, "mean_reversion": 0.15}
+        weights = combiner.get_active_weights(adaptive)
+        # Weights should be blended (70% adaptive + 30% regime) and sum to ~1.0
+        assert abs(sum(weights.values()) - 1.0) < 0.01
+        # Momentum should be higher than default due to adaptive boost
+        assert weights["momentum"] > DEFAULT_WEIGHTS["momentum"]

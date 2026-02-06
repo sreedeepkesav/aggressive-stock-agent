@@ -8,6 +8,8 @@ from data.indicators import (
     calculate_rsi, rsi_latest, calculate_sma, calculate_ema,
     calculate_atr, calculate_macd, calculate_bollinger_bands,
     calculate_obv, add_all_indicators,
+    calculate_stochastic, calculate_vwap, calculate_roc,
+    calculate_bb_pctb, calculate_keltner_channels, calculate_adl,
 )
 
 
@@ -103,11 +105,67 @@ class TestOBV:
         assert len(obv) == 100
 
 
+class TestStochastic:
+    def test_stochastic_range(self):
+        df = _make_ohlcv(100)
+        pct_k, pct_d = calculate_stochastic(df)
+        valid_k = pct_k.dropna()
+        assert (valid_k >= 0).all() and (valid_k <= 100).all()
+
+    def test_stochastic_length(self):
+        df = _make_ohlcv(100)
+        pct_k, pct_d = calculate_stochastic(df)
+        assert len(pct_k) == 100
+
+
+class TestVWAP:
+    def test_vwap_positive(self):
+        df = _make_ohlcv(100)
+        vwap = calculate_vwap(df)
+        valid = vwap.dropna()
+        assert (valid > 0).all()
+
+
+class TestROC:
+    def test_roc_length(self):
+        s = pd.Series(range(50), dtype=float)
+        roc = calculate_roc(s, 12)
+        assert len(roc) == 50
+
+
+class TestBBPctB:
+    def test_pctb_basic(self):
+        df = _make_ohlcv(100)
+        pctb = calculate_bb_pctb(df["Close"])
+        valid = pctb.dropna()
+        # Most values should be between -0.5 and 1.5
+        assert len(valid) > 0
+
+
+class TestKeltnerChannels:
+    def test_keltner_order(self):
+        df = _make_ohlcv(100)
+        upper, middle, lower = calculate_keltner_channels(df)
+        valid_idx = upper.dropna().index.intersection(lower.dropna().index)
+        assert (upper[valid_idx] >= lower[valid_idx]).all()
+
+
+class TestADL:
+    def test_adl_length(self):
+        df = _make_ohlcv(100)
+        adl = calculate_adl(df)
+        assert len(adl) == 100
+
+
 class TestAddAllIndicators:
     def test_adds_columns(self):
         df = _make_ohlcv(100)
         result = add_all_indicators(df)
-        expected = ["SMA_20", "SMA_50", "RSI", "MACD", "ATR", "BB_Upper", "BB_Lower", "OBV"]
+        expected = [
+            "SMA_20", "SMA_50", "RSI", "MACD", "ATR", "BB_Upper", "BB_Lower", "OBV",
+            "Stoch_K", "Stoch_D", "ROC_12", "VWAP", "BB_PctB",
+            "Keltner_Upper", "Keltner_Lower", "ADL",
+        ]
         for col in expected:
             assert col in result.columns, f"Missing column: {col}"
 

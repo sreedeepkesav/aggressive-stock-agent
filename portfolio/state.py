@@ -67,6 +67,49 @@ def init_db(path: str = None) -> None:
             key TEXT PRIMARY KEY,
             value TEXT NOT NULL
         );
+
+        CREATE TABLE IF NOT EXISTS analysis_history (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            symbol TEXT NOT NULL,
+            analysis_date TEXT NOT NULL,
+            combined_score REAL,
+            action TEXT,
+            confidence REAL,
+            agreement_pct REAL,
+            close_price REAL,
+            regime TEXT DEFAULT 'UNKNOWN'
+        );
+
+        CREATE TABLE IF NOT EXISTS engine_signals (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            analysis_id INTEGER REFERENCES analysis_history(id),
+            engine_name TEXT NOT NULL,
+            signal TEXT NOT NULL,
+            confidence REAL,
+            numeric_signal REAL
+        );
+
+        CREATE TABLE IF NOT EXISTS analysis_outcomes (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            analysis_id INTEGER REFERENCES analysis_history(id),
+            days_after INTEGER NOT NULL,
+            actual_price REAL,
+            actual_return_pct REAL,
+            signal_correct INTEGER
+        );
+
+        CREATE TABLE IF NOT EXISTS engine_accuracy (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            engine_name TEXT NOT NULL,
+            window_start TEXT,
+            window_end TEXT,
+            total_signals INTEGER,
+            correct_signals INTEGER,
+            accuracy REAL,
+            avg_return_when_correct REAL,
+            avg_return_when_wrong REAL,
+            regime TEXT DEFAULT 'ALL'
+        );
     """)
     conn.commit()
     conn.close()

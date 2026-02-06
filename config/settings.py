@@ -5,6 +5,11 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import List
 
+from dotenv import load_dotenv
+
+# Load .env file from project root
+load_dotenv(os.path.join(os.path.dirname(os.path.dirname(__file__)), ".env"))
+
 
 class LLMMode(Enum):
     OFF = "off"

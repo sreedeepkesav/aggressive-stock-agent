@@ -110,6 +110,12 @@ class RiskManager:
         qty = min(risk_based_qty, value_based_qty)
         return max(0, qty)
 
+    def check_exit_signals(self) -> list:
+        """Check all open positions for exit signals (trailing stops, profit taking, time exits)."""
+        from portfolio.exits import check_exit_signals
+        positions = state.get_positions()
+        return check_exit_signals(positions)
+
     def update_peak_value(self) -> float:
         """Update peak portfolio value for drawdown tracking."""
         positions = state.get_positions()

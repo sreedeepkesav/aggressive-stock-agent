@@ -15,6 +15,7 @@ import pandas as pd
 
 from config.settings import Settings, RiskParams
 from engines.signal_combiner import SignalCombiner, CombinedSignal
+from engines.timeframe import apply_timeframe_filter
 from portfolio import state
 from portfolio.risk import RiskManager
 from portfolio.tracker import get_portfolio_summary, get_trade_stats, sharpe_ratio, vs_spy
@@ -39,9 +40,24 @@ with st.sidebar:
     st.title("Stock Agent")
     page = st.radio(
         "Navigate",
-        ["Ticker Analysis", "Market Scan", "Portfolio", "Discovery", "Settings"],
+        ["Ticker Analysis", "Market Scan", "Portfolio", "Engine Performance",
+         "Backtest", "Discovery", "Settings"],
         index=0,
     )
+    st.divider()
+
+    # Show regime info
+    try:
+        from engines.regime import detect_regime
+        regime = detect_regime()
+        st.caption(f"Regime: `{regime.regime.value}`")
+        st.caption(f"VIX: `{regime.vix_level:.1f}`")
+        st.caption(f"Breadth: `{regime.breadth_pct:.0%}`")
+        if regime.block_buys:
+            st.error("BUY signals blocked (VIX > 35)")
+    except Exception:
+        st.caption("Regime: loading...")
+
     st.divider()
     st.caption(f"LLM Mode: `{settings.llm_mode.value}`")
     st.caption(f"Max Position: {settings.risk.max_position_pct:.0%}")
@@ -95,7 +111,7 @@ def render_combined_signal(sig: CombinedSignal):
 # ============================================================
 if page == "Ticker Analysis":
     st.header("Ticker Analysis")
-    st.caption("Run all 5 engines on a single stock")
+    st.caption("Run all 5 engines + regime detection + multi-timeframe confirmation")
 
     col1, col2 = st.columns([3, 1])
     with col1:
@@ -105,10 +121,24 @@ if page == "Ticker Analysis":
 
     if analyze_btn and symbol:
         with st.spinner(f"Analyzing {symbol} across 5 engines..."):
+            from portfolio.memory import get_adaptive_weights, save_analysis, check_outcomes
+            check_outcomes()
+            adaptive_weights = get_adaptive_weights()
+
             combiner = SignalCombiner()
-            sig = combiner.analyze(symbol)
+            sig = combiner.analyze(symbol, adaptive_weights=adaptive_weights)
+            sig = apply_timeframe_filter(sig)
 
         st.subheader(f"Results: {symbol}")
+
+        # Regime info
+        if sig.regime:
+            col1, col2, col3, col4 = st.columns(4)
+            col1.metric("Regime", sig.regime.regime.value)
+            col2.metric("VIX", f"{sig.regime.vix_level:.1f}")
+            col3.metric("SPY Trend", sig.regime.spy_trend)
+            col4.metric("Breadth", f"{sig.regime.breadth_pct:.0%}")
+
         render_combined_signal(sig)
 
         st.subheader("Engine Breakdown")
@@ -116,14 +146,25 @@ if page == "Ticker Analysis":
 
         if sig.reasons:
             st.subheader("Top Reasons")
-            for r in sig.reasons[:8]:
+            for r in sig.reasons[:10]:
                 st.markdown(f"- {r}")
+
+        # Save analysis
+        price = 0
+        momentum_result = sig.engine_results.get("momentum")
+        if momentum_result:
+            price = momentum_result.metadata.get("entry", 0)
+        regime_str = sig.regime.regime.value if sig.regime else "UNKNOWN"
+        save_analysis(
+            symbol=symbol, combined_score=sig.combined_score, action=sig.action,
+            confidence=sig.confidence, agreement_pct=sig.agreement_pct,
+            close_price=price, regime=regime_str, engine_results=sig.engine_results,
+        )
 
         # Risk check for actionable signals
         if sig.is_actionable and sig.action in ("STRONG_BUY", "BUY"):
             st.subheader("Risk Assessment")
             rm = RiskManager(settings.risk)
-            momentum_result = sig.engine_results.get("momentum")
             entry = momentum_result.metadata.get("entry", 0) if momentum_result else 0
             if entry > 0:
                 stop = rm.calculate_stop_loss(symbol, entry)
@@ -143,13 +184,19 @@ if page == "Ticker Analysis":
                 col2.metric("Entry Price", f"${entry:.2f}")
                 col3.metric("Stop Loss", f"${stop:.2f}")
 
+                # Show trailing stop level
+                from portfolio.exits import calculate_trailing_stop_level
+                trail = calculate_trailing_stop_level(symbol, entry, "")
+                if trail:
+                    st.metric("Trailing Stop", f"${trail:.2f}")
+
 
 # ============================================================
 # Page: Market Scan
 # ============================================================
 elif page == "Market Scan":
     st.header("Market Scan")
-    st.caption("Scan your watchlist for the best opportunities")
+    st.caption("Scan your watchlist with regime-aware analysis")
 
     col1, col2 = st.columns([3, 1])
     with col1:
@@ -158,16 +205,27 @@ elif page == "Market Scan":
         scan_btn = st.button("Scan Watchlist", type="primary", use_container_width=True)
 
     if scan_btn:
+        from portfolio.memory import get_adaptive_weights, check_outcomes
+        check_outcomes()
+        adaptive_weights = get_adaptive_weights()
+
         progress_bar = st.progress(0, text="Scanning...")
         combiner = SignalCombiner()
+
+        # Show regime
+        regime = combiner.regime_info
+        st.info(f"Regime: **{regime.regime.value}** | VIX: {regime.vix_level:.1f} | "
+                f"Breadth: {regime.breadth_pct:.0%} | SPY: {regime.spy_trend}")
+
         signals = []
         watchlist = settings.watchlist
 
         for i, sym in enumerate(watchlist):
             try:
-                sig = combiner.analyze(sym)
+                sig = combiner.analyze(sym, adaptive_weights=adaptive_weights)
+                sig = apply_timeframe_filter(sig)
                 signals.append(sig)
-            except Exception as e:
+            except Exception:
                 pass
             progress_bar.progress((i + 1) / len(watchlist), text=f"Analyzing {sym}...")
 
@@ -187,7 +245,7 @@ elif page == "Market Scan":
                 "Confidence": f"{sig.confidence:.0%}",
                 "Agreement": f"{sig.agreement_pct:.0%}",
                 "Actionable": "Yes" if sig.is_actionable else "",
-                "Top Reason": sig.reasons[0] if sig.reasons else "-",
+                "Top Reason": sig.reasons[1] if len(sig.reasons) > 1 else (sig.reasons[0] if sig.reasons else "-"),
             })
 
         if rows:
@@ -207,7 +265,7 @@ elif page == "Market Scan":
 elif page == "Portfolio":
     st.header("Portfolio")
 
-    tab1, tab2 = st.tabs(["Overview", "Trade History"])
+    tab1, tab2, tab3 = st.tabs(["Overview", "Trade History", "Exit Signals"])
 
     with tab1:
         summary = get_portfolio_summary()
@@ -253,6 +311,170 @@ elif page == "Portfolio":
             col3.metric("Excess Return", f"{spy_data.get('excess_return', 0):.1%}")
         else:
             st.info("No trade history yet")
+
+    with tab3:
+        st.subheader("Active Exit Signals")
+        rm = RiskManager(settings.risk)
+        exits = rm.check_exit_signals()
+        if exits:
+            exit_rows = []
+            for es in exits:
+                exit_rows.append({
+                    "Symbol": es.symbol,
+                    "Type": es.exit_type,
+                    "Exit %": f"{es.exit_pct:.0%}",
+                    "Price": f"${es.exit_price:.2f}",
+                    "Urgency": es.urgency,
+                    "Reason": es.reason,
+                })
+            st.dataframe(pd.DataFrame(exit_rows), use_container_width=True, hide_index=True)
+        else:
+            st.info("No active exit signals")
+
+
+# ============================================================
+# Page: Engine Performance
+# ============================================================
+elif page == "Engine Performance":
+    st.header("Engine Performance")
+    st.caption("Track how each engine performs over time - the learning system")
+
+    from portfolio.memory import (
+        get_engine_performance_summary, compute_engine_accuracy,
+        get_analysis_history, check_outcomes,
+    )
+
+    col1, col2 = st.columns([3, 1])
+    with col2:
+        if st.button("Refresh Data", type="primary"):
+            check_outcomes()
+            compute_engine_accuracy()
+            st.rerun()
+
+    # Engine accuracy
+    perf = get_engine_performance_summary()
+    if perf:
+        st.subheader("Engine Accuracy (last 90 days)")
+        perf_rows = []
+        for p in perf:
+            perf_rows.append({
+                "Engine": p["engine_name"].replace("_", " ").title(),
+                "Accuracy": f"{p['accuracy']:.0%}",
+                "Signals": p["total_signals"],
+                "Correct": p["correct_signals"],
+                "Avg Return (Correct)": f"{p['avg_return_when_correct']:+.1%}" if p['avg_return_when_correct'] else "-",
+                "Avg Return (Wrong)": f"{p['avg_return_when_wrong']:+.1%}" if p['avg_return_when_wrong'] else "-",
+            })
+        st.dataframe(pd.DataFrame(perf_rows), use_container_width=True, hide_index=True)
+
+        # Adaptive weights
+        from portfolio.memory import get_adaptive_weights
+        adaptive = get_adaptive_weights()
+        if adaptive:
+            st.subheader("Adaptive Weights")
+            from engines.signal_combiner import DEFAULT_WEIGHTS
+            weight_rows = []
+            for eng in DEFAULT_WEIGHTS:
+                weight_rows.append({
+                    "Engine": eng.replace("_", " ").title(),
+                    "Default Weight": f"{DEFAULT_WEIGHTS[eng]:.0%}",
+                    "Adaptive Weight": f"{adaptive.get(eng, DEFAULT_WEIGHTS[eng]):.0%}",
+                    "Change": f"{(adaptive.get(eng, DEFAULT_WEIGHTS[eng]) - DEFAULT_WEIGHTS[eng]):+.0%}",
+                })
+            st.dataframe(pd.DataFrame(weight_rows), use_container_width=True, hide_index=True)
+    else:
+        st.info("No engine performance data yet. Run some analyses first, then check back after 5+ days.")
+
+    # Recent analysis history
+    st.subheader("Recent Analysis History")
+    history = get_analysis_history(limit=20)
+    if history:
+        hist_rows = []
+        for h in history:
+            outcome = ""
+            if h.get("actual_return_pct") is not None:
+                ret = h["actual_return_pct"]
+                correct = h.get("signal_correct")
+                outcome = f"{ret:+.1%} {'correct' if correct else 'wrong'}"
+
+            hist_rows.append({
+                "Date": h["analysis_date"][:10] if h.get("analysis_date") else "",
+                "Symbol": h.get("symbol", ""),
+                "Action": h.get("action", ""),
+                "Score": f"{h['combined_score']:+.3f}" if h.get("combined_score") is not None else "",
+                "Confidence": f"{h['confidence']:.0%}" if h.get("confidence") is not None else "",
+                "Regime": h.get("regime", ""),
+                "5-Day Outcome": outcome,
+            })
+        st.dataframe(pd.DataFrame(hist_rows), use_container_width=True, hide_index=True)
+    else:
+        st.info("No analysis history yet")
+
+
+# ============================================================
+# Page: Backtest
+# ============================================================
+elif page == "Backtest":
+    st.header("Backtesting")
+    st.caption("Walk-forward backtest to validate the system")
+
+    col1, col2, col3 = st.columns([2, 2, 1])
+    with col1:
+        months = st.slider("Backtest Period (months)", min_value=3, max_value=24, value=12)
+    with col2:
+        symbols_option = st.selectbox("Symbols", ["Full Watchlist", "Top 10 Only", "Custom"])
+    with col3:
+        run_btn = st.button("Run Backtest", type="primary", use_container_width=True)
+
+    if symbols_option == "Custom":
+        custom_syms = st.text_input("Enter symbols (comma-separated)", value="NVDA,AAPL,MSFT,TSLA,AMD")
+        symbols = [s.strip().upper() for s in custom_syms.split(",") if s.strip()]
+    elif symbols_option == "Top 10 Only":
+        symbols = settings.watchlist[:10]
+    else:
+        symbols = settings.watchlist
+
+    if run_btn:
+        from portfolio.backtest import run_backtest, format_backtest_report
+
+        with st.spinner(f"Running backtest on {len(symbols)} symbols for {months} months..."):
+            result = run_backtest(symbols=symbols, months=months)
+
+        # Summary metrics
+        col1, col2, col3, col4 = st.columns(4)
+        col1.metric("Total Return", f"{result.total_return_pct:+.1%}")
+        col2.metric("SPY Return", f"{result.spy_return_pct:+.1%}")
+        col3.metric("Excess Return", f"{result.excess_return_pct:+.1%}",
+                     delta=f"vs SPY")
+        col4.metric("Sharpe Ratio", f"{result.sharpe_ratio:.2f}")
+
+        col5, col6, col7, col8 = st.columns(4)
+        col5.metric("Total Trades", result.total_trades)
+        col6.metric("Win Rate", f"{result.win_rate:.0%}")
+        col7.metric("Profit Factor", f"{result.profit_factor:.2f}")
+        col8.metric("Max Drawdown", f"{result.max_drawdown_pct:.1%}")
+
+        # Equity curve
+        if result.equity_curve:
+            st.subheader("Equity Curve")
+            eq_df = pd.DataFrame({"Portfolio Value": result.equity_curve})
+            st.line_chart(eq_df)
+
+        # Trades table
+        if result.trades:
+            st.subheader(f"All Trades ({len(result.trades)})")
+            trade_rows = []
+            for t in sorted(result.trades, key=lambda x: x.pnl_pct, reverse=True):
+                trade_rows.append({
+                    "Symbol": t.symbol,
+                    "Entry": t.entry_date,
+                    "Exit": t.exit_date,
+                    "Entry $": f"${t.entry_price:.2f}",
+                    "Exit $": f"${t.exit_price:.2f}",
+                    "Return": f"{t.pnl_pct:+.1%}",
+                    "PnL": f"${t.pnl:+,.0f}",
+                })
+            st.dataframe(pd.DataFrame(trade_rows), use_container_width=True, hide_index=True)
 
 
 # ============================================================

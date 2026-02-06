@@ -77,6 +77,27 @@ def get_history_with_indicators(symbol: str, period: str = "6mo") -> pd.DataFram
     return df
 
 
+def get_weekly_history(symbol: str, period: str = "1y") -> pd.DataFrame:
+    """Fetch weekly price history for multi-timeframe analysis."""
+    cache = get_cache()
+    key = f"weekly:{symbol}:{period}"
+    cached = cache.get(key)
+    if cached is not None:
+        return cached
+
+    try:
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            ticker = get_ticker(symbol)
+            df = ticker.history(period=period, interval="1wk")
+        if not df.empty:
+            cache.set(key, df)
+        return df
+    except Exception as e:
+        logger.error(f"Error fetching weekly history for {symbol}: {e}")
+        return pd.DataFrame()
+
+
 def get_info(symbol: str) -> dict:
     """Return ticker.info with caching."""
     cache = get_cache()
