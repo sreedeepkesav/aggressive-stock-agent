@@ -1,111 +1,149 @@
-# Aggressive Stock Advisory Agent
+# Stock Analysis Agent
 
-An AI-powered stock analysis and trading system with 8 institutional-grade analysis engines. Uses Claude AI to deliver professional-level momentum, breakout, options flow, and fundamental analysis.
+A modular, professional stock analysis tool with 5 analysis engines, signal combination, risk management, and portfolio tracking. Runs locally, costs $0/month by default.
+
+**This is NOT financial advice.** This tool is for educational and research purposes only. No guarantees of returns.
 
 ## Quick Start
 
 ```bash
-# 1. Clone
-git clone https://github.com/sreedeepkesav/aggressive-stock-agent.git
-cd aggressive-stock-agent
-
-# 2. Set up Python environment
+# 1. Set up environment
 python3 -m venv venv
 source venv/bin/activate
-
-# 3. Install dependencies
 pip install -r requirements.txt
 
-# 4. Configure API keys
+# 2. Configure (optional - works with defaults)
 cp .env.example .env
-# Edit .env and add your ANTHROPIC_API_KEY (required)
 
-# 5. Run
-python stock_agent.py help
-```
+# 3. Launch web dashboard
+python stock_agent.py web
 
-## API Tokens
-
-Only `ANTHROPIC_API_KEY` is required. All others are optional with automatic fallbacks.
-
-| Variable | Required | Free Tier | Get it from |
-|---|---|---|---|
-| `ANTHROPIC_API_KEY` | **Yes** | Pay-as-you-go | [console.anthropic.com](https://console.anthropic.com/) |
-| `ALPHA_VANTAGE_API_KEY` | No | 25 calls/day | [alphavantage.co](https://www.alphavantage.co/support/#api-key) |
-| `POLYGON_API_KEY` | No | Free w/ Alpaca | [alpaca.markets](https://alpaca.markets/) |
-| `SEC_API_KEY` | No | 100 req/day | [sec-api.io](https://sec-api.io/) |
-| `REDDIT_CLIENT_ID` | No | Unlimited | [reddit.com/prefs/apps](https://www.reddit.com/prefs/apps) |
-| `REDDIT_CLIENT_SECRET` | No | Unlimited | (same as above) |
-| `AVANZA_USERNAME` | No | Broker account | [avanza.se](https://www.avanza.se/) |
-| `AVANZA_PASSWORD` | No | Broker account | (same as above) |
-| `AUTO_EXECUTE` | No | — | Set `true` to auto-trade (default `false`) |
-
-## Modes
-
-### Analyze a stock
-```bash
+# Or use the terminal
 python stock_agent.py ticker NVDA
 ```
-Runs all 8 professional analysis engines on a single ticker.
 
-### Screen by strategy
-```bash
-python stock_agent.py screen momentum    # Volume surge + price momentum
-python stock_agent.py screen value       # Undervalued + strong fundamentals
-python stock_agent.py screen breakout    # Chart pattern breakouts
-python stock_agent.py screen earnings    # Pre-earnings setups
-python stock_agent.py screen whale       # Unusual institutional activity
-python stock_agent.py screen oversold    # Oversold bounces
-```
-Screens 20+ candidates, then runs full analysis on the top 5.
+No API keys required for default operation (`LLM_MODE=off`).
 
-### Multi-strategy scan
-```bash
-python stock_agent.py scan
-```
-Runs all strategies simultaneously and finds high-conviction overlaps.
+## Web Dashboard
 
-### Discovery & auto-trading
 ```bash
-python stock_agent.py discover           # News-driven ticker discovery
-python stock_agent.py auto               # Continuous discovery + monitoring
-python stock_agent.py auto force         # Skip market timing, run immediately
+python stock_agent.py web          # Opens browser at http://localhost:8501
+python stock_agent.py web 9000     # Custom port
 ```
 
-### Other
+The dashboard has 5 pages:
+
+| Page | Description |
+|------|-------------|
+| **Ticker Analysis** | Enter a symbol, runs all 5 engines, shows combined signal + risk check |
+| **Market Scan** | Scans watchlist with progress bar, ranked table of opportunities |
+| **Portfolio** | Positions, cash, drawdown, trade history, Sharpe ratio, vs SPY |
+| **Discovery** | Reddit trending tickers + RSS news feed |
+| **Settings** | Current risk parameters, LLM config, watchlist |
+
+## Terminal CLI
+
 ```bash
-python stock_agent.py watchlist          # Analyze curated 60+ ticker watchlist
-python stock_agent.py update             # Force refresh universe data
-python stock_agent.py help               # Full help with all options
+python stock_agent.py ticker NVDA       # Full analysis (5 engines + signal combiner)
+python stock_agent.py scan 5            # Scan watchlist, show top 5 opportunities
+python stock_agent.py portfolio show    # Portfolio state (positions, cash, drawdown)
+python stock_agent.py portfolio stats   # Trade statistics (Sharpe, win rate, vs SPY)
+python stock_agent.py discovery         # Discover tickers from news + Reddit
+python stock_agent.py universe update   # Refresh S&P 500 / momentum / value lists
+python stock_agent.py help              # Full help with all env vars
+```
+
+Legacy modes (`screen`, `watchlist`, `discover`, `auto`) remain available for backward compatibility.
+
+## Architecture
+
+```
+stock_agent.py          # Entry point (routes to web or cli)
+app.py                  # Streamlit web dashboard
+config/
+  settings.py           # All configurable parameters (risk, LLM, watchlist)
+  logging_config.py     # Structured logging with file rotation
+data/
+  indicators.py         # ONE canonical RSI, SMA, ATR, MACD, BB, OBV
+  market_data.py        # yfinance wrapper with TTL cache
+  cache.py              # In-memory TTL cache (eliminates redundant API calls)
+  news.py               # RSS + yfinance news with deduplication
+  sec_edgar.py          # Free SEC EDGAR API (no paid keys needed)
+  reddit.py             # Reddit JSON API (no auth needed)
+  universe.py           # S&P 500, momentum, value stock lists
+engines/
+  base.py               # EngineResult dataclass + BaseEngine ABC
+  momentum.py           # Volume surge, trend structure, RSI/MACD confluence
+  technical.py          # Chart patterns, S/R breakouts, MA crossovers, BB squeezes
+  sector.py             # Sector ETF momentum, relative strength vs SPY
+  mean_reversion.py     # Oversold/overbought extremes, price deviation from SMA200
+  fundamental.py        # ROE, margins, growth, debt, valuation scoring
+  signal_combiner.py    # Weighted combination of all engines -> trade decision
+portfolio/
+  models.py             # Position, Trade, Order dataclasses
+  state.py              # SQLite persistence (portfolio.db)
+  risk.py               # Position limits, drawdown breaker, sector caps
+  tracker.py            # Sharpe ratio, win rate, max drawdown, vs SPY
+cli/
+  main.py               # argparse entry point
+  display.py            # All formatting and display functions
+connectors/
+  base.py               # Abstract BrokerConnector interface
+  paper.py              # Paper trading (SQLite-backed)
+tests/                  # pytest test suite (32 tests)
 ```
 
 ## Analysis Engines
 
-The system runs 8 engines in parallel for institutional-grade analysis:
+| Engine | Weight | What it does |
+|--------|--------|-------------|
+| Momentum | 25% | Volume surges, trend structure, RSI/MACD confluence, volatility expansion |
+| Fundamental | 25% | Profitability, growth, financial health, valuation, efficiency scoring |
+| Technical | 20% | S/R breakouts, chart patterns (triangles), MA crossovers, BB squeezes |
+| Sector | 15% | Sector ETF momentum, relative strength vs SPY, sector flow analysis |
+| Mean Reversion | 15% | Price deviation from SMA200, RSI/BB extremes, volume divergence |
 
-1. **Momentum Breakout** — Volume surges, trend structure, technical confluence
-2. **Options Flow (Whale Tracking)** — Put/call ratios, large block trades
-3. **Earnings Surprise** — Historical beat patterns, analyst revision momentum
-4. **Technical Breakout** — Chart patterns, support/resistance, MA crossovers
-5. **Dark Pool Monitor** — Hidden institutional accumulation detection
-6. **Sector Rotation** — Economic cycle positioning, relative strength
-7. **Mean Reversion** — Oversold/overbought extremes, Bollinger Band analysis
-8. **Fundamental Scorer** — ROE, margins, growth, debt, valuation metrics
+The **Signal Combiner** takes all 5 engine results, applies configurable weights, handles disagreement (dampening), and produces an actionable trade decision with confidence score.
 
-Signals from multiple engines combine to boost confidence scores. See [PROFESSIONAL_FEATURES.md](PROFESSIONAL_FEATURES.md) for detailed engine output examples.
+## Risk Parameters
 
-## Documentation
+All risk parameters are configurable via environment variables:
 
-- [USAGE.md](USAGE.md) — Detailed mode descriptions and example output
-- [PROFESSIONAL_FEATURES.md](PROFESSIONAL_FEATURES.md) — All 8 engines explained with sample output
-- [SCREENING_GUIDE.md](SCREENING_GUIDE.md) — Strategy screening guide
-- [API_SETUP.md](API_SETUP.md) — Step-by-step API key setup instructions
+| Parameter | Env Var | Default | Description |
+|-----------|---------|---------|-------------|
+| Max Position | `MAX_POSITION_PCT` | 10% | Max allocation per position |
+| Portfolio Heat | `MAX_PORTFOLIO_HEAT` | 8% | Max total portfolio risk |
+| Drawdown Breaker | `DRAWDOWN_CIRCUIT_BREAKER` | -10% | Stop trading at this drawdown from peak |
+| Max Positions | `MAX_SIMULTANEOUS_POSITIONS` | 5 | Max number of open positions |
+| Sector Cap | `MAX_SECTOR_CONCENTRATION` | 40% | Max allocation to one sector |
+| Cash Reserve | `CASH_RESERVE_PCT` | 20% | Minimum cash reserve |
+| Daily Risk | `MAX_DAILY_RISK` | 5% | Daily risk tolerance |
+| Profit Target | `MIN_PROFIT_TARGET` | 8% | Minimum profit target |
+| Swing Stop | `STOP_LOSS_ATR_SWING` | 2.0 ATR | Stop loss for swing trades |
+| Position Stop | `STOP_LOSS_ATR_POSITION` | 2.5 ATR | Stop loss for position trades |
 
-## Risk Disclaimer
+Example override:
+```bash
+MAX_POSITION_PCT=0.15 MAX_SIMULTANEOUS_POSITIONS=3 python stock_agent.py ticker NVDA
+```
 
-This tool is for **educational and research purposes**. It provides aggressive trading recommendations with high risk tolerance. Always:
+## LLM Cost Control
 
-- Verify recommendations with your own research
-- Never invest more than you can afford to lose
-- Use manual confirmation mode (`AUTO_EXECUTE=false`) until you understand the system
-- Past signals do not guarantee future results
+| Mode | Env Var | Cost | Description |
+|------|---------|------|-------------|
+| Off (default) | `LLM_MODE=off` | $0/month | Pure algorithmic analysis |
+| Haiku | `LLM_MODE=haiku` | ~$0.0003/run | AI summaries |
+| Sonnet | `LLM_MODE=sonnet` | ~$0.01/run | Deep AI analysis |
+
+`ANTHROPIC_API_KEY` is only needed when `LLM_MODE` is not `off`.
+
+## Tests
+
+```bash
+pip install pytest
+python -m pytest tests/ -v
+```
+
+## Disclaimer
+
+This software is provided "as is" for educational and research purposes only. It is not financial advice. There are no guarantees of returns. Trading stocks involves risk of loss. Always do your own research and consult a licensed financial advisor before making investment decisions.

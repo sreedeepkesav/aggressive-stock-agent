@@ -334,92 +334,9 @@ class SECFilingMonitor:
         return 0.0
     
     def _get_fallback_insider_data(self) -> List[Dict]:
-        """Fallback method using free SEC data sources"""
-        try:
-            # Use free SEC EDGAR database directly
-            import requests
-            import json
-            from datetime import datetime, timedelta
-            
-            insider_signals = []
-            
-            # SEC EDGAR REST API (completely free, no key needed)
-            # Get recent Form 4 filings (insider trading)
-            end_date = datetime.now().strftime('%Y-%m-%d')
-            start_date = (datetime.now() - timedelta(days=7)).strftime('%Y-%m-%d')
-            
-            try:
-                # SEC Company Facts API - free and public
-                headers = {'User-Agent': 'Mozilla/5.0 (compatible; StockBot/1.0; research@example.com)'}
-                
-                # Get recent insider trading from high-profile companies
-                popular_tickers = ['AAPL', 'MSFT', 'GOOGL', 'TSLA', 'NVDA', 'META', 'AMZN']
-                
-                for ticker in popular_tickers[:3]:  # Limit to 3 to avoid overload
-                    try:
-                        # Create realistic insider signal based on recent market activity
-                        import random
-                        
-                        # Generate realistic insider trading signal
-                        if random.random() > 0.5:  # 50% chance of insider activity
-                            insider_signals.append({
-                                'ticker': ticker,
-                                'company': f'{ticker} Inc.',
-                                'signal_type': 'insider_buying' if random.random() > 0.3 else 'insider_selling',
-                                'strength': round(0.5 + random.random() * 0.4, 2),  # 0.5-0.9
-                                'form_type': '4',
-                                'filed_date': (datetime.now() - timedelta(days=random.randint(1, 5))).strftime('%Y-%m-%d'),
-                                'source': 'sec_edgar_free',
-                                'market_cap': 'large'
-                            })
-                            
-                    except Exception as e:
-                        continue
-                        
-                if not insider_signals:
-                    # Fallback to basic signals for popular tickers
-                    insider_signals = [
-                        {
-                            'ticker': 'AAPL',
-                            'company': 'Apple Inc.',
-                            'signal_type': 'insider_buying',
-                            'strength': 0.7,
-                            'form_type': '4',
-                            'filed_date': datetime.now().strftime('%Y-%m-%d'),
-                            'source': 'basic_fallback',
-                            'market_cap': 'large'
-                        },
-                        {
-                            'ticker': 'TSLA',
-                            'company': 'Tesla Inc.',
-                            'signal_type': 'insider_buying',
-                            'strength': 0.6,
-                            'form_type': '4',
-                            'filed_date': datetime.now().strftime('%Y-%m-%d'),
-                            'source': 'basic_fallback',
-                            'market_cap': 'large'
-                        }
-                    ]
-                
-            except Exception as e:
-                logger.debug(f"SEC EDGAR API error: {e}")
-                # Ultimate fallback
-                insider_signals = [{
-                    'ticker': 'AAPL',
-                    'company': 'Apple Inc.',
-                    'signal_type': 'insider_buying',
-                    'strength': 0.6,
-                    'form_type': '4',
-                    'filed_date': datetime.now().strftime('%Y-%m-%d'),
-                    'source': 'minimal_fallback',
-                    'market_cap': 'large'
-                }]
-            
-            return insider_signals[:3]  # Limit to 3 signals
-            
-        except Exception as e:
-            logger.warning(f"Fallback insider data failed: {e}")
-            return []
+        """Fallback when SEC API is unavailable - returns empty (no fabricated data)"""
+        logger.warning("SEC insider data unavailable - no fallback data generated")
+        return []
     
     def _estimate_market_cap(self, market_cap: int) -> str:
         """Estimate market cap category"""
@@ -643,29 +560,9 @@ class RedditSentimentMonitor:
         return final_signals
     
     def _get_fallback_social_data(self) -> List[Dict]:
-        """Fallback method when Reddit API is not available"""
-        # Mock some social sentiment data for demonstration
-        mock_signals = [
-            {
-                'ticker': 'PLTR',
-                'signal_type': 'reddit_sentiment',
-                'strength': 0.8,
-                'sentiment': 0.6,
-                'mentions': 5,
-                'subreddits': ['wallstreetbets', 'stocks'],
-                'source': 'fallback_social'
-            },
-            {
-                'ticker': 'SOFI',
-                'signal_type': 'reddit_sentiment', 
-                'strength': 0.7,
-                'sentiment': 0.4,
-                'mentions': 3,
-                'subreddits': ['investing'],
-                'source': 'fallback_social'
-            }
-        ]
-        return mock_signals[:2]  # Limit fallback data
+        """Fallback when Reddit API is unavailable - returns empty (no fabricated data)"""
+        logger.warning("Reddit social data unavailable - no fallback data generated")
+        return []
 
 class TickerDiscovery:
     """Discovers potential trading opportunities from financial news"""
@@ -1258,8 +1155,8 @@ class MomentumBreakoutEngine:
             return {'signal': 'NO_DATA', 'confidence': 0.0, 'reason': 'Insufficient data'}
         
         latest = df.iloc[-1]
-        recent_5d = df.iloc[-5:]
-        recent_20d = df.iloc[-20:]
+        recent_5d = df.iloc[-6:-1]
+        recent_20d = df.iloc[-21:-1]
         
         signals = []
         confidence = 0.0
@@ -1342,10 +1239,9 @@ class MomentumBreakoutEngine:
 
 class OptionsFlowAnalyzer:
     """Options flow analysis for institutional whale tracking"""
-    
+
     def __init__(self):
-        self.alpha_vantage_key = os.getenv('ALPHA_VANTAGE_API_KEY')
-        self.polygon_key = os.getenv('POLYGON_API_KEY')
+        pass
     
     def analyze_options_flow(self, symbol: str) -> Dict:
         """Analyze options flow for whale activity detection"""
@@ -1514,10 +1410,9 @@ class OptionsFlowAnalyzer:
 
 class EarningsSurpriseEngine:
     """Earnings surprise prediction for institutional alpha generation"""
-    
+
     def __init__(self):
-        self.alpha_vantage_key = os.getenv('ALPHA_VANTAGE_API_KEY')
-        self.sec_api_key = os.getenv('SEC_API_KEY')
+        pass
     
     def analyze_earnings_surprise_potential(self, symbol: str) -> Dict:
         """Predict earnings surprise potential using multiple data sources"""
@@ -1631,33 +1526,8 @@ class EarningsSurpriseEngine:
             return None
     
     def _analyze_historical_surprises(self, earnings_data: Dict) -> float:
-        """Analyze historical earnings surprise patterns"""
-        try:
-            quarterly = earnings_data.get('quarterly')
-            if quarterly is None or quarterly.empty:
-                return 0.5  # Neutral score
-            
-            # Look for patterns in earnings beats
-            recent_quarters = quarterly.head(8)  # Last 2 years
-            
-            # Simple pattern: consistent revenue growth + margin expansion
-            if len(recent_quarters) >= 4:
-                revenue_growth = recent_quarters['Revenue'].pct_change().dropna()
-                earnings_growth = recent_quarters['Earnings'].pct_change().dropna()
-                
-                # Positive revenue growth in most recent quarters
-                recent_revenue_positive = (revenue_growth.head(3) > 0).sum() / 3
-                
-                # Earnings growing faster than revenue (margin expansion)
-                margin_expansion = (earnings_growth > revenue_growth).sum() / len(earnings_growth)
-                
-                return min(1.0, (recent_revenue_positive * 0.6) + (margin_expansion * 0.4))
-            
-            return 0.5
-            
-        except Exception as e:
-            logger.warning(f"Historical surprise analysis failed: {e}")
-            return 0.5
+        """Analyze historical earnings surprise patterns - returns neutral (broken column access)"""
+        return 0.5
     
     def _analyze_growth_divergence(self, ticker) -> float:
         """Analyze revenue vs earnings growth divergence"""
@@ -2228,10 +2098,9 @@ class TechnicalBreakoutDetector:
 
 class DarkPoolMonitor:
     """Dark pool activity monitoring for institutional flow detection"""
-    
+
     def __init__(self):
-        self.alpha_vantage_key = os.getenv('ALPHA_VANTAGE_API_KEY')
-        self.polygon_key = os.getenv('POLYGON_API_KEY')
+        pass
     
     def analyze_dark_pool_activity(self, symbol: str) -> Dict:
         """Analyze dark pool and institutional block trading activity"""
@@ -4813,11 +4682,18 @@ class StockAdvisoryAgent:
             'MRNA', 'BNTX', 'REGN', 'GILD', 'VRTX'
         ]
         
-        # AGGRESSIVE SETTINGS
-        self.max_position_pct = 0.35  # 35% per position (was 20%)
-        self.max_daily_risk = 0.15    # 15% daily risk tolerance (was 5%)
-        self.min_profit_target = 0.12  # 12% minimum profit target (was 8%)
-        self.aggressive_mode = True
+        # RISK SETTINGS (configurable via env vars)
+        self.max_position_pct = float(os.getenv('MAX_POSITION_PCT', '0.10'))       # 10% per position
+        self.max_daily_risk = float(os.getenv('MAX_DAILY_RISK', '0.05'))            # 5% daily risk tolerance
+        self.min_profit_target = float(os.getenv('MIN_PROFIT_TARGET', '0.08'))      # 8% minimum profit target
+        self.max_portfolio_heat = float(os.getenv('MAX_PORTFOLIO_HEAT', '0.08'))     # 8% max portfolio heat
+        self.drawdown_circuit_breaker = float(os.getenv('DRAWDOWN_CIRCUIT_BREAKER', '-0.10'))  # -10% from peak
+        self.max_simultaneous_positions = int(os.getenv('MAX_SIMULTANEOUS_POSITIONS', '5'))
+        self.max_sector_concentration = float(os.getenv('MAX_SECTOR_CONCENTRATION', '0.40'))  # 40%
+        self.cash_reserve_pct = float(os.getenv('CASH_RESERVE_PCT', '0.20'))         # 20% cash reserve
+        self.stop_loss_atr_swing = float(os.getenv('STOP_LOSS_ATR_SWING', '2.0'))    # 2.0 ATR for swing
+        self.stop_loss_atr_position = float(os.getenv('STOP_LOSS_ATR_POSITION', '2.5'))  # 2.5 ATR for position
+        self.aggressive_mode = False
         
         # MONITORING STATE
         self.monitored_tickers = []  # List of discovered tickers to monitor
@@ -4977,18 +4853,15 @@ class StockAdvisoryAgent:
         """
         
         try:
-            # Use Claude agent to generate recommendations
-            response = self.agent.run(context)
-            
-            # Parse the response into structured recommendations
-            recommendations = self._parse_agent_response(response)
-            
-            logger.info(f"Claude generated {len(recommendations)} recommendations based on {len(all_news)} news sources")
-            
+            # Generate rule-based recommendations directly (no LLM call needed)
+            recommendations = self._parse_agent_response("")
+
+            logger.info(f"Generated {len(recommendations)} recommendations based on {len(all_news)} news sources")
+
             return recommendations
-            
+
         except Exception as e:
-            logger.error(f"Error generating recommendations with Claude: {e}")
+            logger.error(f"Error generating recommendations: {e}")
             return []
     
     def _interpret_sentiment(self, sentiment_score: float) -> str:
@@ -6975,57 +6848,56 @@ def show_comprehensive_help():
     print("="*80)
 
 def main():
-    """Main entry point with mode selection"""
+    """Main entry point - routes to new modular CLI or legacy modes."""
     import sys
-    
+
     if len(sys.argv) < 2 or sys.argv[1].lower() in ['help', '--help', '-h']:
-        show_comprehensive_help()
+        # Use new CLI help
+        from cli.display import print_help
+        print_help()
         return
-    
+
     mode = sys.argv[1].lower()
-    
-    if mode == 'ticker' and len(sys.argv) >= 3:
-        # Mode 1: Single ticker analysis
-        ticker = sys.argv[2]
-        run_single_ticker_analysis(ticker)
-        
-    elif mode == 'screen' and len(sys.argv) >= 3:
-        # Mode 2: Intelligent stock screening
+
+    # Web interface
+    if mode == 'web':
+        import subprocess
+        port = sys.argv[2] if len(sys.argv) >= 3 else "8501"
+        app_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "app.py")
+        venv_streamlit = os.path.join(os.path.dirname(os.path.abspath(__file__)), "venv", "bin", "streamlit")
+        cmd = venv_streamlit if os.path.exists(venv_streamlit) else "streamlit"
+        subprocess.run([cmd, "run", app_path, "--server.port", port])
+        return
+
+    # New modular CLI modes (recommended)
+    if mode in ('ticker', 'scan', 'portfolio', 'discovery', 'universe'):
+        from cli.main import main as cli_main
+        cli_main(sys.argv[1:])
+        return
+
+    # Legacy modes (backward compatibility)
+    if mode == 'screen' and len(sys.argv) >= 3:
         strategy_type = sys.argv[2].lower()
         analyze_top = int(sys.argv[3]) if len(sys.argv) >= 4 else 5
         run_stock_screening(strategy_type, analyze_top)
-        
-    elif mode == 'scan':
-        # Mode 3: Multi-strategy scan
-        run_multi_strategy_scan()
-        
+
     elif mode == 'watchlist':
-        # Mode 4: Original predefined ticker analysis
         run_advisory_agent()
-        
+
     elif mode == 'discover':
-        # Mode 5: Discovery mode
         session = sys.argv[2] if len(sys.argv) >= 3 else None
         run_discovery_mode(session)
-        
+
     elif mode == 'auto':
-        # Mode 6: Automated discovery with scheduling
         force = len(sys.argv) >= 3 and sys.argv[2].lower() == 'force'
         run_scheduled_discovery(force=force)
-    
+
     elif mode == 'update':
-        # Mode 7: Force universe updates
         run_universe_update()
-        
+
     else:
-        print("❌ Invalid mode.")
-        print("Available modes: ticker, screen, scan, watchlist, discover, auto, update, help")
-        print("\nExamples:")
-        print("  python stock_agent.py ticker NVDA")
-        print("  python stock_agent.py screen momentum")
-        print("  python stock_agent.py scan")
-        print("  python stock_agent.py update     # Force fresh universe updates")
-        print("  python stock_agent.py help")
+        print("Unknown mode. Use: ticker, scan, portfolio, discovery, universe, help")
+        print("Legacy modes: screen, watchlist, discover, auto, update")
 
 if __name__ == "__main__":
     main()

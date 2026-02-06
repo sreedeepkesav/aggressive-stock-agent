@@ -1,16 +1,16 @@
-langchain==0.1.0
-langchain-community==0.0.20
-langchain-anthropic==0.1.0
-anthropic==0.18.0
-yfinance==0.2.18
-feedparser==6.0.10
-pandas==2.0.3
-numpy==1.24.3
-textblob==0.17.1
-schedule==1.2.0
-requests==2.31.0
-python-dotenv==1.0.0
-pytz>=2023.3
-sec-api==1.0.4
-edgartools>=1.0.0
-praw>=7.7.0
+# Core
+yfinance>=0.2.36
+feedparser>=6.0.10
+pandas>=2.0.0
+numpy>=1.24.0
+requests>=2.31.0
+python-dotenv>=1.0.0
+streamlit>=1.30.0
+
+# Optional: LLM (only needed when LLM_MODE != off)
+langchain>=0.3.0
+langchain-anthropic>=0.3.0
+anthropic>=0.40.0
+
+# Optional: trading calendar
+# exchange_calendars>=4.5.0
