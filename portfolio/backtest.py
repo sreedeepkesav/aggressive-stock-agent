@@ -1,13 +1,20 @@
 """Walk-forward backtesting framework.
 
+Two modes:
+- Full mode (default): Uses real SignalCombiner with all 5 engines, earnings blackout,
+  slippage, commission, and live-matching exit rules (trailing stop + staged profit taking + time exit).
+- Fast mode (--fast): Uses simplified _quick_score() for rapid iteration. No slippage/commission.
+
 Design:
 - Download 2 years of daily data for symbols
-- Walk-forward: train window = 6 months, test window = 1 month, slide forward
-- On each test day: run signal combiner logic, simulate trades
-- Track: Sharpe ratio, max drawdown, win rate, total return, vs SPY
+- Walk-forward: test window = N months, weekly signal evaluation
+- On each evaluation day: run signal combiner or quick score, simulate trades
+- Exit rules match live system: trailing stop (HWM - ATR * mult), staged profit at 2R/3R/5R, time exit
+- Track: Sharpe ratio, max drawdown, win rate, total return, vs SPY, regime breakdown, costs
 """
 
 import logging
+import sys
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from typing import Dict, List, Optional
@@ -26,6 +33,10 @@ from data.market_data import get_history
 
 logger = logging.getLogger("stock_agent")
 
+# Cost assumptions
+SLIPPAGE_PCT = 0.001   # 0.1% slippage per side
+COMMISSION_PER_TRADE = 1.0  # $1 per trade
+
 
 @dataclass
 class BacktestTrade:
@@ -40,6 +51,9 @@ class BacktestTrade:
     pnl_pct: float = 0.0
     signal_action: str = ""
     confidence: float = 0.0
+    regime: str = ""
+    slippage_cost: float = 0.0
+    commission_cost: float = 0.0
 
 
 @dataclass
@@ -47,6 +61,7 @@ class BacktestResult:
     """Results from a backtest run."""
     period_months: int
     symbols_tested: List[str]
+    mode: str = "full"           # "full" or "fast"
     total_trades: int = 0
     winning_trades: int = 0
     losing_trades: int = 0
@@ -59,36 +74,52 @@ class BacktestResult:
     profit_factor: float = 0.0
     avg_win_pct: float = 0.0
     avg_loss_pct: float = 0.0
+    total_costs: float = 0.0
     trades: List[BacktestTrade] = field(default_factory=list)
     equity_curve: List[float] = field(default_factory=list)
     monthly_returns: Dict[str, float] = field(default_factory=dict)
+    regime_breakdown: Dict[str, dict] = field(default_factory=dict)
 
     @property
     def summary(self) -> str:
-        return (
-            f"Backtest: {self.period_months}mo | {len(self.symbols_tested)} symbols | "
-            f"{self.total_trades} trades\n"
+        mode_label = "FULL (real combiner)" if self.mode == "full" else "FAST (quick score)"
+        lines = [
+            f"Backtest [{mode_label}]: {self.period_months}mo | {len(self.symbols_tested)} symbols | "
+            f"{self.total_trades} trades",
             f"Return: {self.total_return_pct:+.1%} (SPY: {self.spy_return_pct:+.1%}, "
-            f"Excess: {self.excess_return_pct:+.1%})\n"
+            f"Excess: {self.excess_return_pct:+.1%})",
             f"Sharpe: {self.sharpe_ratio:.2f} | Max DD: {self.max_drawdown_pct:.1%} | "
-            f"Win Rate: {self.win_rate:.0%}\n"
+            f"Win Rate: {self.win_rate:.0%}",
             f"Profit Factor: {self.profit_factor:.2f} | "
-            f"Avg Win: {self.avg_win_pct:+.1%} | Avg Loss: {self.avg_loss_pct:+.1%}"
-        )
+            f"Avg Win: {self.avg_win_pct:+.1%} | Avg Loss: {self.avg_loss_pct:+.1%}",
+        ]
+        if self.total_costs > 0:
+            lines.append(f"Total Costs: ${self.total_costs:,.2f} (slippage + commission)")
+        if self.regime_breakdown:
+            lines.append("Regime Breakdown:")
+            for regime, stats in self.regime_breakdown.items():
+                lines.append(f"  {regime}: {stats['trades']} trades, "
+                           f"win rate {stats['win_rate']:.0%}, "
+                           f"avg return {stats['avg_return']:+.1%}")
+        return "\n".join(lines)
 
 
 def run_backtest(symbols: List[str], months: int = 12,
-                 initial_capital: float = 100000.0) -> BacktestResult:
+                 initial_capital: float = 100000.0, fast: bool = False,
+                 progress_callback=None) -> BacktestResult:
     """Run walk-forward backtest.
 
     Args:
         symbols: List of ticker symbols to test
         months: Total backtest period in months
         initial_capital: Starting capital
+        fast: If True, use _quick_score instead of real SignalCombiner
+        progress_callback: Optional callable(current, total, message) for progress updates
     """
-    logger.info(f"Starting backtest: {len(symbols)} symbols, {months} months")
+    mode = "fast" if fast else "full"
+    logger.info(f"Starting backtest [{mode}]: {len(symbols)} symbols, {months} months")
 
-    result = BacktestResult(period_months=months, symbols_tested=symbols)
+    result = BacktestResult(period_months=months, symbols_tested=symbols, mode=mode)
 
     # Fetch SPY for benchmark
     spy_df = get_history("SPY", period="2y")
@@ -98,7 +129,9 @@ def run_backtest(symbols: List[str], months: int = 12,
 
     # Fetch all symbol data upfront
     symbol_data = {}
-    for sym in symbols:
+    for i, sym in enumerate(symbols):
+        if progress_callback:
+            progress_callback(i, len(symbols), f"Fetching {sym}...")
         df = get_history(sym, period="2y")
         if not df.empty and len(df) >= 100:
             df = add_all_indicators(df)
@@ -107,6 +140,12 @@ def run_backtest(symbols: List[str], months: int = 12,
     if not symbol_data:
         logger.error("No valid symbol data for backtest")
         return result
+
+    # Set up combiner for full mode
+    combiner = None
+    if not fast:
+        from engines.signal_combiner import SignalCombiner
+        combiner = SignalCombiner()
 
     # Walk-forward simulation
     capital = initial_capital
@@ -120,16 +159,22 @@ def run_backtest(symbols: List[str], months: int = 12,
     start_idx = max(0, len(all_dates) - months * 21)  # ~21 trading days per month
     test_dates = all_dates[start_idx:]
 
-    open_positions = {}  # symbol -> BacktestTrade
+    open_positions = {}  # symbol -> {trade, hwm, entry_atr, remaining_qty, partial_exits}
     max_positions = 5
     position_size_pct = 0.10  # 10% per position
+
+    total_eval_days = len(test_dates)
 
     for i, date in enumerate(test_dates):
         date_str = date.strftime("%Y-%m-%d")
 
+        if progress_callback and i % 20 == 0:
+            progress_callback(i, total_eval_days, f"Simulating {date_str}...")
+
         # Check exits for open positions
         for sym in list(open_positions.keys()):
-            trade = open_positions[sym]
+            pos = open_positions[sym]
+            trade = pos["trade"]
             if sym not in symbol_data:
                 continue
 
@@ -137,38 +182,88 @@ def run_backtest(symbols: List[str], months: int = 12,
             if date not in sym_df.index:
                 continue
 
-            current_price = sym_df.loc[date, "Close"]
+            current_price = float(sym_df.loc[date, "Close"])
             entry_price = trade.entry_price
+            entry_atr = pos["entry_atr"]
 
-            # Simple exit rules for backtest:
-            # 1. Stop loss: 2 ATR below entry
-            atr_at_entry = sym_df.loc[date, "ATR"] if "ATR" in sym_df.columns and not pd.isna(sym_df.loc[date, "ATR"]) else current_price * 0.02
-            stop_loss = entry_price - atr_at_entry * 2.0
+            # Update high water mark
+            pos["hwm"] = max(pos["hwm"], current_price)
+            hwm = pos["hwm"]
 
-            # 2. Profit target: 4 ATR above entry
-            target = entry_price + atr_at_entry * 4.0
+            # Risk per share (for R-multiple)
+            risk_per_share = entry_atr * 2.5
+            if risk_per_share <= 0:
+                risk_per_share = entry_price * 0.02
 
-            # 3. Time stop: 20 bars
-            bars_held = 0
-            try:
-                entry_dt = datetime.fromisoformat(trade.entry_date)
-                bars_held = (date.to_pydatetime().replace(tzinfo=None) - entry_dt).days
-            except (ValueError, TypeError):
-                pass
+            profit_per_share = current_price - entry_price
+            r_multiple = profit_per_share / risk_per_share if risk_per_share > 0 else 0
 
-            should_exit = False
-            if current_price <= stop_loss:
-                should_exit = True
-            elif current_price >= target:
-                should_exit = True
-            elif bars_held > 28 and (current_price - entry_price) / entry_price < 0.02:
-                should_exit = True
+            # 1. Trailing stop (matches live: HWM - ATR * mult, tightens at 2R and 3R)
+            if r_multiple >= 3.0:
+                trail_mult = 1.5
+            elif r_multiple >= 2.0:
+                trail_mult = 2.0
+            else:
+                trail_mult = 2.5
+
+            trailing_stop = hwm - (entry_atr * trail_mult)
+            should_exit = current_price < trailing_stop
+            exit_reason = "trailing_stop"
+
+            # 2. Staged profit taking at 2R, 3R, 5R
+            if not should_exit:
+                partial_exits = pos.get("partial_exits", set())
+                remaining = pos["remaining_qty"]
+
+                if r_multiple >= 5.0 and "5R" not in partial_exits:
+                    # Close all remaining
+                    should_exit = True
+                    exit_reason = "profit_5R"
+                elif r_multiple >= 3.0 and "3R" not in partial_exits:
+                    # Take 33% of remaining
+                    exit_qty = max(1, int(remaining * 0.33))
+                    _record_partial_exit(pos, trade, date_str, current_price, exit_qty, fast)
+                    pos["partial_exits"].add("3R")
+                    capital += (current_price * (1 - SLIPPAGE_PCT) - entry_price) * exit_qty - COMMISSION_PER_TRADE if not fast else (current_price - entry_price) * exit_qty
+                elif r_multiple >= 2.0 and "2R" not in partial_exits:
+                    exit_qty = max(1, int(remaining * 0.33))
+                    _record_partial_exit(pos, trade, date_str, current_price, exit_qty, fast)
+                    pos["partial_exits"].add("2R")
+                    capital += (current_price * (1 - SLIPPAGE_PCT) - entry_price) * exit_qty - COMMISSION_PER_TRADE if not fast else (current_price - entry_price) * exit_qty
+
+            # 3. Time stop: 20 trading days (~28 calendar) with < 2% gain
+            if not should_exit:
+                try:
+                    entry_dt = datetime.fromisoformat(trade.entry_date)
+                    days_held = (date.to_pydatetime().replace(tzinfo=None) - entry_dt).days
+                    gain_pct = (current_price - entry_price) / entry_price if entry_price > 0 else 0
+                    if days_held > 28 and gain_pct < 0.02:
+                        should_exit = True
+                        exit_reason = "time_exit"
+                except (ValueError, TypeError):
+                    pass
 
             if should_exit:
+                remaining = pos["remaining_qty"]
+                if remaining <= 0:
+                    del open_positions[sym]
+                    continue
+
+                if fast:
+                    exit_price = current_price
+                    slippage = 0.0
+                    commission = 0.0
+                else:
+                    exit_price = current_price * (1 - SLIPPAGE_PCT)
+                    slippage = current_price * SLIPPAGE_PCT * remaining
+                    commission = COMMISSION_PER_TRADE
+
                 trade.exit_date = date_str
-                trade.exit_price = current_price
-                trade.pnl = (current_price - entry_price) * trade.quantity
-                trade.pnl_pct = (current_price - entry_price) / entry_price
+                trade.exit_price = exit_price
+                trade.pnl = (exit_price - entry_price) * remaining - commission
+                trade.pnl_pct = (exit_price - entry_price) / entry_price if entry_price > 0 else 0
+                trade.slippage_cost = trade.slippage_cost + slippage
+                trade.commission_cost = trade.commission_cost + commission
                 capital += trade.pnl
                 all_trades.append(trade)
                 del open_positions[sym]
@@ -191,16 +286,30 @@ def run_backtest(symbols: List[str], months: int = 12,
             if date not in sym_df.index:
                 continue
 
-            # Simple scoring using available indicators at this date
             try:
                 idx = sym_df.index.get_loc(date)
                 if idx < 50:
                     continue
-
                 row = sym_df.iloc[idx]
-                score = _quick_score(sym_df, idx)
-                if score > 0.3:
-                    scored.append((sym, score, row["Close"]))
+                price = float(row["Close"])
+
+                if fast:
+                    score = _quick_score(sym_df, idx)
+                    if score > 0.3:
+                        scored.append((sym, score, price, "BUY", "UNKNOWN"))
+                else:
+                    # Full mode: use real SignalCombiner
+                    try:
+                        sig = combiner.analyze(sym)
+                        if sig.is_actionable and sig.action in ("BUY", "STRONG_BUY"):
+                            # Check earnings blackout
+                            from data.earnings import is_earnings_blackout
+                            if not is_earnings_blackout(sym):
+                                regime_str = sig.regime.regime.value if sig.regime else "UNKNOWN"
+                                scored.append((sym, sig.combined_score, price, sig.action, regime_str))
+                    except Exception as e:
+                        logger.debug(f"Full backtest signal failed for {sym}: {e}")
+                        continue
             except Exception:
                 continue
 
@@ -208,23 +317,55 @@ def run_backtest(symbols: List[str], months: int = 12,
         scored.sort(key=lambda x: x[1], reverse=True)
         slots = max_positions - len(open_positions)
 
-        for sym, score, price in scored[:slots]:
+        for sym, score, price, action, regime_str in scored[:slots]:
             if price <= 0:
                 continue
+
+            if fast:
+                entry_price = price
+                entry_slippage = 0.0
+                entry_commission = 0.0
+            else:
+                entry_price = price * (1 + SLIPPAGE_PCT)
+                entry_slippage = price * SLIPPAGE_PCT
+                entry_commission = COMMISSION_PER_TRADE
+
             pos_value = capital * position_size_pct
-            qty = int(pos_value / price)
+            qty = int(pos_value / entry_price)
             if qty <= 0:
                 continue
+
+            # Get ATR at entry
+            sym_df = symbol_data[sym]
+            entry_atr = 0.0
+            if "ATR" in sym_df.columns and date in sym_df.index:
+                atr_val = sym_df.loc[date, "ATR"]
+                if not pd.isna(atr_val):
+                    entry_atr = float(atr_val)
+            if entry_atr <= 0:
+                entry_atr = price * 0.02
 
             trade = BacktestTrade(
                 symbol=sym,
                 entry_date=date_str,
-                entry_price=price,
+                entry_price=entry_price,
                 quantity=qty,
-                signal_action="BUY",
+                signal_action=action,
                 confidence=score,
+                regime=regime_str,
+                slippage_cost=entry_slippage * qty,
+                commission_cost=entry_commission,
             )
-            open_positions[sym] = trade
+
+            capital -= entry_commission  # Deduct entry commission from capital
+
+            open_positions[sym] = {
+                "trade": trade,
+                "hwm": entry_price,
+                "entry_atr": entry_atr,
+                "remaining_qty": qty,
+                "partial_exits": set(),
+            }
 
         # Track equity
         daily_ret = 0
@@ -235,14 +376,26 @@ def run_backtest(symbols: List[str], months: int = 12,
         peak_capital = max(peak_capital, capital)
 
     # Close any remaining positions at last price
-    for sym, trade in open_positions.items():
+    for sym, pos in open_positions.items():
+        trade = pos["trade"]
+        remaining = pos["remaining_qty"]
+        if remaining <= 0:
+            continue
         if sym in symbol_data:
             df = symbol_data[sym]
             if not df.empty:
-                trade.exit_price = df["Close"].iloc[-1]
+                last_price = float(df["Close"].iloc[-1])
+                if fast:
+                    exit_price = last_price
+                else:
+                    exit_price = last_price * (1 - SLIPPAGE_PCT)
+                    trade.slippage_cost += last_price * SLIPPAGE_PCT * remaining
+                    trade.commission_cost += COMMISSION_PER_TRADE
+
+                trade.exit_price = exit_price
                 trade.exit_date = df.index[-1].strftime("%Y-%m-%d")
-                trade.pnl = (trade.exit_price - trade.entry_price) * trade.quantity
-                trade.pnl_pct = (trade.exit_price - trade.entry_price) / trade.entry_price
+                trade.pnl = (exit_price - trade.entry_price) * remaining
+                trade.pnl_pct = (exit_price - trade.entry_price) / trade.entry_price if trade.entry_price > 0 else 0
                 capital += trade.pnl
                 all_trades.append(trade)
 
@@ -257,12 +410,29 @@ def run_backtest(symbols: List[str], months: int = 12,
         result.winning_trades = len(wins)
         result.losing_trades = len(losses)
         result.win_rate = len(wins) / len(all_trades)
-        result.avg_win_pct = np.mean([t.pnl_pct for t in wins]) if wins else 0
-        result.avg_loss_pct = np.mean([t.pnl_pct for t in losses]) if losses else 0
+        result.avg_win_pct = float(np.mean([t.pnl_pct for t in wins])) if wins else 0
+        result.avg_loss_pct = float(np.mean([t.pnl_pct for t in losses])) if losses else 0
 
         gross_profit = sum(t.pnl for t in wins)
         gross_loss = abs(sum(t.pnl for t in losses))
         result.profit_factor = gross_profit / gross_loss if gross_loss > 0 else float("inf")
+
+        # Total costs
+        result.total_costs = sum(t.slippage_cost + t.commission_cost for t in all_trades)
+
+        # Regime breakdown
+        regime_trades: Dict[str, List[BacktestTrade]] = {}
+        for t in all_trades:
+            r = t.regime or "UNKNOWN"
+            regime_trades.setdefault(r, []).append(t)
+
+        for regime, trades in regime_trades.items():
+            r_wins = [t for t in trades if t.pnl > 0]
+            result.regime_breakdown[regime] = {
+                "trades": len(trades),
+                "win_rate": len(r_wins) / len(trades) if trades else 0,
+                "avg_return": float(np.mean([t.pnl_pct for t in trades])) if trades else 0,
+            }
 
     result.total_return_pct = (capital - initial_capital) / initial_capital
 
@@ -291,12 +461,24 @@ def run_backtest(symbols: List[str], months: int = 12,
             max_dd = min(max_dd, dd)
         result.max_drawdown_pct = max_dd
 
-    logger.info(f"Backtest complete: {result.total_trades} trades, return {result.total_return_pct:.1%}")
+    logger.info(f"Backtest [{mode}] complete: {result.total_trades} trades, return {result.total_return_pct:.1%}")
     return result
 
 
+def _record_partial_exit(pos: dict, trade: BacktestTrade, date_str: str,
+                         price: float, qty: int, fast: bool):
+    """Record a partial exit (staged profit taking). Reduces remaining_qty."""
+    pos["remaining_qty"] -= qty
+    if not fast:
+        trade.slippage_cost += price * SLIPPAGE_PCT * qty
+        trade.commission_cost += COMMISSION_PER_TRADE
+
+
 def _quick_score(df: pd.DataFrame, idx: int) -> float:
-    """Quick scoring function for backtesting (simplified signal combiner)."""
+    """Quick scoring function for backtesting (simplified signal combiner).
+
+    Used in --fast mode for rapid iteration without real engine calls.
+    """
     try:
         row = df.iloc[idx]
         score = 0.0
@@ -358,9 +540,10 @@ def _quick_score(df: pd.DataFrame, idx: int) -> float:
 
 def format_backtest_report(result: BacktestResult) -> str:
     """Format a backtest result as a readable text report."""
+    mode_label = "FULL (real combiner)" if result.mode == "full" else "FAST (quick score)"
     lines = [
         "=" * 60,
-        "  BACKTEST RESULTS",
+        f"  BACKTEST RESULTS [{mode_label}]",
         "=" * 60,
         f"  Period:          {result.period_months} months",
         f"  Symbols:         {len(result.symbols_tested)}",
@@ -383,17 +566,35 @@ def format_backtest_report(result: BacktestResult) -> str:
         "",
     ]
 
+    # Costs (full mode only)
+    if result.total_costs > 0:
+        lines.append("  --- Costs ---")
+        lines.append(f"  Total Costs:     ${result.total_costs:,.2f}")
+        total_slippage = sum(t.slippage_cost for t in result.trades)
+        total_commission = sum(t.commission_cost for t in result.trades)
+        lines.append(f"  Slippage:        ${total_slippage:,.2f}")
+        lines.append(f"  Commission:      ${total_commission:,.2f}")
+        lines.append("")
+
+    # Regime breakdown
+    if result.regime_breakdown:
+        lines.append("  --- Regime Breakdown ---")
+        for regime, stats in sorted(result.regime_breakdown.items()):
+            lines.append(f"    {regime:20s}  {stats['trades']:3d} trades  "
+                        f"WR {stats['win_rate']:.0%}  Avg {stats['avg_return']:+.1%}")
+        lines.append("")
+
     # Top trades
     if result.trades:
         best = sorted(result.trades, key=lambda t: t.pnl_pct, reverse=True)
         lines.append("  --- Top 5 Trades ---")
         for t in best[:5]:
-            lines.append(f"    {t.symbol:6s} {t.entry_date} → {t.exit_date}  {t.pnl_pct:+.1%}  ${t.pnl:+.0f}")
+            lines.append(f"    {t.symbol:6s} {t.entry_date} -> {t.exit_date}  {t.pnl_pct:+.1%}  ${t.pnl:+.0f}")
 
         lines.append("")
         lines.append("  --- Bottom 5 Trades ---")
         for t in best[-5:]:
-            lines.append(f"    {t.symbol:6s} {t.entry_date} → {t.exit_date}  {t.pnl_pct:+.1%}  ${t.pnl:+.0f}")
+            lines.append(f"    {t.symbol:6s} {t.entry_date} -> {t.exit_date}  {t.pnl_pct:+.1%}  ${t.pnl:+.0f}")
 
     lines.append("=" * 60)
     return "\n".join(lines)

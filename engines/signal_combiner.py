@@ -14,6 +14,7 @@ from engines.sector import SectorEngine
 from engines.mean_reversion import MeanReversionEngine
 from engines.fundamental import FundamentalEngine
 from engines.regime import MarketRegime, RegimeInfo, detect_regime, REGIME_WEIGHTS
+from data.earnings import is_earnings_blackout, days_until_earnings
 
 logger = logging.getLogger("stock_agent")
 
@@ -170,6 +171,21 @@ class SignalCombiner:
             action = "SELL"
         else:
             action = "STRONG_SELL"
+
+        # Earnings blackout: suppress buy signals near earnings
+        try:
+            if is_earnings_blackout(symbol):
+                days = days_until_earnings(symbol) or 0
+                if action in ("STRONG_BUY", "BUY"):
+                    action = "HOLD"
+                    avg_confidence *= 0.3
+                    all_reasons.insert(0, f"[Earnings] Within {days}d of earnings - BUY signal suppressed")
+            else:
+                days = days_until_earnings(symbol)
+                if days is not None and days <= 10:
+                    all_reasons.insert(1, f"[Earnings] {days}d until earnings - monitor closely")
+        except Exception:
+            pass  # Don't let earnings check failure break analysis
 
         return CombinedSignal(
             symbol=symbol,

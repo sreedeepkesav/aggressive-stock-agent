@@ -83,7 +83,8 @@ python stock_agent.py packages          # List all 83 packages by region
 python stock_agent.py portfolio show    # Portfolio state + active exit signals
 python stock_agent.py portfolio stats   # Trade statistics + engine accuracy
 python stock_agent.py backtest 12       # Interactive package selection, then backtest
-python stock_agent.py backtest 6 -p us_mega_cap  # Backtest specific package
+python stock_agent.py backtest 6 -p us_mega_cap  # Backtest specific package (full mode)
+python stock_agent.py backtest 6 -p us_mega_cap --fast  # Fast mode (simplified scoring)
 python stock_agent.py discovery         # Discover tickers from news + Reddit
 python stock_agent.py universe update   # Refresh S&P 500 / momentum / value lists
 python stock_agent.py settings          # Interactive settings (LLM, API keys, risk params)
@@ -106,19 +107,20 @@ data/
                         #   VWAP, ROC, BB%B, Keltner Channels, ADL
   market_data.py        # yfinance wrapper with TTL cache + weekly data
   cache.py              # In-memory TTL cache (eliminates redundant API calls)
+  earnings.py           # Earnings calendar, blackout detection, surprise history
   news.py               # RSS + yfinance news with deduplication
   sec_edgar.py          # Free SEC EDGAR API (no paid keys needed)
   reddit.py             # Reddit JSON API (no auth needed)
   universe.py           # S&P 500, momentum, value stock lists
 engines/
   base.py               # EngineResult dataclass + BaseEngine ABC
-  regime.py             # Market regime detection (SPY, VIX, sector breadth)
+  regime.py             # Market regime detection (SPY, VIX, breadth + lead indicators)
   momentum.py           # RSI divergence, MACD crossovers, OBV trend, stochastic
   technical.py          # Market structure (HH/HL), false breakout traps, VWAP, Keltner
   sector.py             # Sector ranking (11 sectors), true relative strength, correlation
   mean_reversion.py     # Regime-gated, detrended deviation, exhaustion detection
-  fundamental.py        # Sector-relative P/E, ROIC, earnings quality, PEG weighting
-  signal_combiner.py    # Regime-aware weighted combination -> trade decision
+  fundamental.py        # Sector-relative P/E, ROIC, earnings quality + surprise history, PEG
+  signal_combiner.py    # Regime-aware weighted combination + earnings blackout -> trade decision
   timeframe.py          # Multi-timeframe weekly confirmation filter
 portfolio/
   models.py             # Position, Trade, Order dataclasses
@@ -127,22 +129,23 @@ portfolio/
   tracker.py            # Sharpe ratio, win rate, max drawdown, vs SPY
   exits.py              # Trailing stops, staged profit taking (2R/3R/5R), time exits
   memory.py             # Learning system: save analyses, check outcomes, adaptive weights
-  backtest.py           # Walk-forward backtesting framework
+  backtest.py           # Walk-forward backtest (full mode: real combiner + costs; fast mode)
 cli/
   main.py               # argparse entry point + interactive package prompts
   display.py            # All formatting and display functions
 connectors/
   base.py               # Abstract BrokerConnector interface
   paper.py              # Paper trading (SQLite-backed)
-tests/                  # pytest test suite (71 tests)
+tests/                  # pytest test suite (85 tests)
 ```
 
 ## Signal Flow
 
 ```
-1. detect_regime()           SPY/VIX/breadth -> TRENDING_UP | TRENDING_DOWN | RANGE_BOUND | HIGH_VOLATILITY
+1. detect_regime()           SPY/VIX/breadth + lead indicators (credit, yield curve, VIX term, risk appetite)
+                             -> TRENDING_UP | TRENDING_DOWN | RANGE_BOUND | HIGH_VOLATILITY
 2. engine.analyze()          Each of 5 engines produces EngineResult (signal + confidence + reasons)
-3. SignalCombiner.analyze()  Regime-adjusted weights + adaptive weights -> CombinedSignal
+3. SignalCombiner.analyze()  Regime-adjusted weights + adaptive weights + earnings blackout -> CombinedSignal
 4. apply_timeframe_filter()  Weekly trend confirms or demotes daily signal
 5. memory.save_analysis()    Save to SQLite for learning
 6. memory.check_outcomes()   Fill actual returns after 5+ days -> per-engine accuracy
@@ -151,7 +154,7 @@ tests/                  # pytest test suite (71 tests)
 
 ## Market Regime Detection
 
-The system classifies market conditions using SPY, VIX, and sector breadth, then adjusts engine weights accordingly:
+The system classifies market conditions using SPY, VIX, sector breadth, and **4 lead indicators** that provide 1-3 week early warnings:
 
 | Regime | Condition | Momentum | Fundamental | Technical | Sector | Mean Rev |
 |--------|-----------|----------|-------------|-----------|--------|----------|
@@ -160,16 +163,26 @@ The system classifies market conditions using SPY, VIX, and sector breadth, then
 | **Range Bound** | Low SMA50 slope, mixed breadth | 15% | 25% | 20% | 10% | 30% |
 | **High Volatility** | VIX > 30 or realized vol spike | 10% | 30% | 10% | 20% | 30% |
 
+**Lead indicators** (can upgrade severity, never downgrade):
+
+| Indicator | Source | Signal |
+|-----------|--------|--------|
+| **Credit Stress** | HYG/LQD ratio | Declining ratio = credit deterioration, early warning |
+| **Yield Curve** | ^TNX - ^IRX spread | Inverted = recession risk, rapid steepening = rate shock |
+| **VIX Term Structure** | ^VIX / ^VIX3M | Backwardation (>1.0) = panic, contango (<0.85) = complacent |
+| **Risk Appetite** | GLD/SPY ratio trend | Rising = risk-off rotation into gold |
+
 **Market filters:**
 - VIX > 35: all new BUY signals blocked
 - SPY down > 3% same day: all confidence reduced by 50%
+- Credit deteriorating + VIX backwardation: extra 20% confidence dampening
 
 ## Analysis Engines
 
 | Engine | Default Weight | Key Techniques |
 |--------|---------------|----------------|
 | **Momentum** | 25% | RSI divergence detection, MACD signal crossovers, stochastic RSI, OBV trend, rate of change, relative RSI thresholds |
-| **Fundamental** | 25% | Sector-relative P/E (vs sector median), forward P/E, ROIC, earnings quality (OCF > NI), PEG-weighted growth scoring |
+| **Fundamental** | 25% | Sector-relative P/E (vs sector median), forward P/E, ROIC, earnings quality (OCF > NI), PEG-weighted growth, earnings surprise history |
 | **Technical** | 20% | Market structure (HH/HL), false breakout traps, VWAP as dynamic S/R, ATR-scaled thresholds, Keltner squeeze, BB %B |
 | **Sector** | 15% | Sector ranking (top 4 of 11), true relative strength (stock vs sector ETF), SPY correlation check |
 | **Mean Reversion** | 15% | Regime-gated activation, detrended deviation (linear regression), stochastic extremes with crossovers, capitulation/exhaustion detection |
@@ -180,6 +193,15 @@ Daily signals are filtered through weekly trend analysis:
 - Daily BUY + weekly downtrend: confidence reduced 40%, may demote to HOLD
 - Daily SELL + weekly uptrend: confidence reduced 40%, may demote to HOLD
 - Daily and weekly agree: confidence boosted 20%
+
+## Earnings Calendar Awareness
+
+The system detects upcoming earnings dates and suppresses signals during binary events:
+
+- **Blackout window** (3 days before, 1 day after): BUY/STRONG_BUY demoted to HOLD, confidence reduced 70%
+- **Warning zone** (4-10 days before): informational note added to reasons
+- **Earnings quality**: beat rate >75% boosts fundamental score; negative surprise trend penalizes it
+- Data sourced from yfinance earnings calendar and historical surprise data
 
 ## Learning System
 
@@ -202,16 +224,22 @@ The system improves over time:
 
 ## Backtesting
 
-Walk-forward backtesting validates the system on historical data:
+Walk-forward backtesting with two modes:
 
 ```bash
-python stock_agent.py backtest 12 --package us_mega_cap   # Backtest specific package
-python stock_agent.py backtest 12                          # Interactive package prompt
+python stock_agent.py backtest 12 --package us_mega_cap          # Full mode (real combiner)
+python stock_agent.py backtest 12 --package us_mega_cap --fast   # Fast mode (simplified scoring)
+python stock_agent.py backtest 12                                 # Interactive package prompt
 ```
 
-**Metrics:** Total return, Sharpe ratio, max drawdown, win rate, profit factor, excess return vs SPY.
+| Mode | Entry Logic | Exit Rules | Costs | Speed |
+|------|------------|------------|-------|-------|
+| **Full** (default) | Real 5-engine SignalCombiner + earnings blackout | Trailing stop (HWM - ATR), staged profit at 2R/3R/5R, time exit | 0.1% slippage + $1 commission per side | ~1-2s per signal |
+| **Fast** (`--fast`) | Simplified indicator scoring (_quick_score) | Same exit rules, no costs | None | Instant |
 
-The web dashboard provides an interactive backtest page with equity curve chart and trade-by-trade breakdown.
+**Metrics:** Total return, Sharpe ratio, max drawdown, win rate, profit factor, excess return vs SPY, total trading costs, per-regime win rate breakdown.
+
+The web dashboard provides a fast/full toggle, equity curve chart, regime breakdown table, and per-trade cost details.
 
 ## Risk Parameters
 
@@ -255,7 +283,7 @@ MAX_POSITION_PCT=0.15 MAX_SIMULTANEOUS_POSITIONS=3 python stock_agent.py ticker 
 
 ```bash
 pip install pytest
-python -m pytest tests/ -v    # 71 tests
+python -m pytest tests/ -v    # 85 tests
 ```
 
 ## Disclaimer

@@ -51,7 +51,8 @@ def cmd_ticker(symbol: str, settings: Settings) -> None:
     # Show regime info
     if signal.regime:
         print_section("Market Regime")
-        print(f"    {signal.regime.summary}")
+        for line in signal.regime.summary.split("\n"):
+            print(f"    {line.strip()}")
 
     # Save analysis to memory
     price = 0
@@ -264,7 +265,7 @@ def cmd_portfolio_stats() -> None:
     print()
 
 
-def cmd_backtest(months: int, settings: Settings, package: str = None) -> None:
+def cmd_backtest(months: int, settings: Settings, package: str = None, fast: bool = False) -> None:
     """Run backtest over specified period."""
     from config.watchlists import get_package_symbols, PACKAGE_META
     from portfolio.backtest import run_backtest, format_backtest_report
@@ -281,12 +282,26 @@ def cmd_backtest(months: int, settings: Settings, package: str = None) -> None:
         print(f"\n  No symbols found for package '{package}'.")
         return
     pkg_name = PACKAGE_META.get(package, {}).get("name", package)
-    print_header(f"Backtest - {pkg_name} - {months} months")
+    mode_label = "FAST" if fast else "FULL"
+    print_header(f"Backtest [{mode_label}] - {pkg_name} - {months} months")
+
+    if not fast:
+        est_calls = len(symbols) * (months * 4)  # ~4 weekly evaluations per month
+        est_minutes = max(1, est_calls // 60)
+        print(f"  Mode: FULL (real 5-engine combiner + slippage + commission)")
+        print(f"  Estimated: ~{est_calls} signal evaluations (~{est_minutes} min)")
+    else:
+        print(f"  Mode: FAST (simplified indicator scoring, no costs)")
 
     print(f"  Running backtest on {len(symbols)} symbols ({pkg_name}) for {months} months...")
     print(f"  This may take a moment...\n")
 
-    result = run_backtest(symbols=symbols, months=months)
+    def _progress(current, total, msg):
+        pct = current / total * 100 if total > 0 else 0
+        print(f"\r  [{pct:5.1f}%] {msg}", end="", flush=True)
+
+    result = run_backtest(symbols=symbols, months=months, fast=fast, progress_callback=_progress)
+    print("\r" + " " * 60 + "\r", end="")  # Clear progress line
     print(format_backtest_report(result))
 
 
@@ -480,6 +495,7 @@ def main(argv=None) -> None:
                         choices=["ticker", "scan", "portfolio", "discovery", "universe", "backtest", "settings", "packages", "help"])
     parser.add_argument("args", nargs="*", default=[])
     parser.add_argument("--package", "-p", default=None, help="Scan a specific watchlist package")
+    parser.add_argument("--fast", action="store_true", default=False, help="Fast backtest mode (simplified scoring, no costs)")
 
     args = parser.parse_args(argv)
     settings = Settings.load()
@@ -523,7 +539,7 @@ def main(argv=None) -> None:
 
     elif mode == "backtest":
         months = int(extra[0]) if extra else 12
-        cmd_backtest(months, settings, package=args.package)
+        cmd_backtest(months, settings, package=args.package, fast=args.fast)
 
     elif mode == "settings":
         cmd_settings()

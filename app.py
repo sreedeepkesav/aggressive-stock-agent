@@ -53,6 +53,10 @@ with st.sidebar:
         st.caption(f"Regime: `{regime.regime.value}`")
         st.caption(f"VIX: `{regime.vix_level:.1f}`")
         st.caption(f"Breadth: `{regime.breadth_pct:.0%}`")
+        st.caption(f"Credit: `{regime.credit_stress:.2f}`")
+        st.caption(f"YC: `{'INV' if regime.yield_curve_inverted else 'OK'}`")
+        st.caption(f"VTS: `{regime.vix_term_structure}`")
+        st.caption(f"Risk: `{regime.risk_appetite}`")
         if regime.block_buys:
             st.error("BUY signals blocked (VIX > 35)")
     except Exception:
@@ -138,6 +142,13 @@ if page == "Ticker Analysis":
             col2.metric("VIX", f"{sig.regime.vix_level:.1f}")
             col3.metric("SPY Trend", sig.regime.spy_trend)
             col4.metric("Breadth", f"{sig.regime.breadth_pct:.0%}")
+
+            # Lead indicators
+            col5, col6, col7, col8 = st.columns(4)
+            col5.metric("Credit Stress", f"{sig.regime.credit_stress:.2f}")
+            col6.metric("Yield Curve", "INVERTED" if sig.regime.yield_curve_inverted else "Normal")
+            col7.metric("VIX Term", sig.regime.vix_term_structure)
+            col8.metric("Risk Appetite", sig.regime.risk_appetite)
 
         render_combined_signal(sig)
 
@@ -445,11 +456,14 @@ elif page == "Backtest":
         for key, name, count in pkgs:
             bt_pkg_options[f"{name} ({count} symbols) [{region}]"] = key
 
-    col1, col2 = st.columns([1, 1])
+    col1, col2, col3 = st.columns([1, 1, 1])
     with col1:
         months = st.slider("Backtest Period (months)", min_value=3, max_value=24, value=12)
     with col2:
         symbols_option = st.selectbox("Symbols", ["Select Package", "Custom"])
+    with col3:
+        bt_mode = st.radio("Mode", ["Full (real combiner)", "Fast (quick score)"], index=1,
+                           help="Full uses real 5-engine combiner with slippage/commission. Fast uses simplified scoring.")
 
     if symbols_option == "Custom":
         custom_syms = st.text_input("Enter symbols (comma-separated)", value="NVDA,AAPL,MSFT,TSLA,AMD")
@@ -467,8 +481,12 @@ elif page == "Backtest":
     if run_btn and symbols:
         from portfolio.backtest import run_backtest, format_backtest_report
 
-        with st.spinner(f"Running backtest on {len(symbols)} symbols for {months} months..."):
-            result = run_backtest(symbols=symbols, months=months)
+        fast_mode = "Fast" in bt_mode
+        mode_label = "fast" if fast_mode else "full"
+        with st.spinner(f"Running {mode_label} backtest on {len(symbols)} symbols for {months} months..."):
+            result = run_backtest(symbols=symbols, months=months, fast=fast_mode)
+
+        st.caption(f"Mode: **{result.mode.upper()}** {'(simplified scoring)' if result.mode == 'fast' else '(real 5-engine combiner)'}")
 
         # Summary metrics
         col1, col2, col3, col4 = st.columns(4)
@@ -484,6 +502,29 @@ elif page == "Backtest":
         col7.metric("Profit Factor", f"{result.profit_factor:.2f}")
         col8.metric("Max Drawdown", f"{result.max_drawdown_pct:.1%}")
 
+        # Costs (full mode only)
+        if result.total_costs > 0:
+            st.subheader("Trading Costs")
+            total_slippage = sum(t.slippage_cost for t in result.trades)
+            total_commission = sum(t.commission_cost for t in result.trades)
+            col1, col2, col3 = st.columns(3)
+            col1.metric("Total Costs", f"${result.total_costs:,.2f}")
+            col2.metric("Slippage", f"${total_slippage:,.2f}")
+            col3.metric("Commission", f"${total_commission:,.2f}")
+
+        # Regime breakdown
+        if result.regime_breakdown:
+            st.subheader("Performance by Regime")
+            regime_rows = []
+            for regime, stats in sorted(result.regime_breakdown.items()):
+                regime_rows.append({
+                    "Regime": regime,
+                    "Trades": stats["trades"],
+                    "Win Rate": f"{stats['win_rate']:.0%}",
+                    "Avg Return": f"{stats['avg_return']:+.1%}",
+                })
+            st.dataframe(pd.DataFrame(regime_rows), use_container_width=True, hide_index=True)
+
         # Equity curve
         if result.equity_curve:
             st.subheader("Equity Curve")
@@ -495,7 +536,7 @@ elif page == "Backtest":
             st.subheader(f"All Trades ({len(result.trades)})")
             trade_rows = []
             for t in sorted(result.trades, key=lambda x: x.pnl_pct, reverse=True):
-                trade_rows.append({
+                row = {
                     "Symbol": t.symbol,
                     "Entry": t.entry_date,
                     "Exit": t.exit_date,
@@ -503,7 +544,11 @@ elif page == "Backtest":
                     "Exit $": f"${t.exit_price:.2f}",
                     "Return": f"{t.pnl_pct:+.1%}",
                     "PnL": f"${t.pnl:+,.0f}",
-                })
+                }
+                if result.mode == "full":
+                    row["Regime"] = t.regime
+                    row["Costs"] = f"${t.slippage_cost + t.commission_cost:.2f}"
+                trade_rows.append(row)
             st.dataframe(pd.DataFrame(trade_rows), use_container_width=True, hide_index=True)
 
 

@@ -3,6 +3,7 @@
 import logging
 
 from data.market_data import get_info
+from data.earnings import get_earnings_surprise_history
 from engines.base import BaseEngine, EngineResult
 
 logger = logging.getLogger("stock_agent")
@@ -45,8 +46,22 @@ class FundamentalEngine(BaseEngine):
             scores["profitability"] = prof["score"]
             reasons.extend(prof["factors"])
 
-            # 2. Growth + PEG (0.25)
+            # 2. Growth + PEG + Earnings Surprise (0.25)
             growth = self._growth(info)
+            # Add earnings surprise quality from actual quarterly data
+            try:
+                surprise = get_earnings_surprise_history(symbol)
+                if surprise["beat_rate"] > 0.75:
+                    growth["score"] = min(1.0, growth["score"] + 0.15)
+                    growth["factors"].append(f"Earnings beat rate {surprise['beat_rate']:.0%}")
+                if surprise["avg_surprise_pct"] > 5.0:
+                    growth["score"] = min(1.0, growth["score"] + 0.10)
+                    growth["factors"].append(f"Avg surprise +{surprise['avg_surprise_pct']:.1f}%")
+                elif surprise["avg_surprise_pct"] < -2.0:
+                    growth["score"] = max(0.0, growth["score"] - 0.10)
+                    growth["factors"].append(f"Negative surprise trend {surprise['avg_surprise_pct']:.1f}%")
+            except Exception:
+                pass
             scores["growth"] = growth["score"]
             reasons.extend(growth["factors"])
 
