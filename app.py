@@ -1,5 +1,6 @@
-"""Streamlit web interface for Stock Analysis Agent.
+"""Stock Analysis Agent — Modern Dashboard.
 
+A clean, intuitive web interface for regime-aware stock analysis.
 Run with: streamlit run app.py
 """
 
@@ -12,9 +13,10 @@ warnings.filterwarnings("ignore", category=FutureWarning)
 
 import streamlit as st
 import pandas as pd
+import altair as alt
 
 from config.settings import Settings, RiskParams
-from engines.signal_combiner import SignalCombiner, CombinedSignal
+from engines.signal_combiner import SignalCombiner, CombinedSignal, DEFAULT_WEIGHTS
 from engines.timeframe import apply_timeframe_filter
 from portfolio import state
 from portfolio.risk import RiskManager
@@ -22,11 +24,144 @@ from portfolio.tracker import get_portfolio_summary, get_trade_stats, sharpe_rat
 
 # --- Page config ---
 st.set_page_config(
-    page_title="Stock Analysis Agent",
-    page_icon="📊",
+    page_title="Stock Agent",
+    page_icon="",
     layout="wide",
     initial_sidebar_state="expanded",
 )
+
+# --- Custom CSS for modern look ---
+st.markdown("""
+<style>
+    /* Clean up default streamlit padding */
+    .block-container { padding-top: 1.5rem; padding-bottom: 1rem; }
+
+    /* Sidebar styling */
+    [data-testid="stSidebar"] {
+        background: linear-gradient(180deg, #0f1419 0%, #1a1f2e 100%);
+    }
+    [data-testid="stSidebar"] .stMarkdown p,
+    [data-testid="stSidebar"] .stMarkdown span,
+    [data-testid="stSidebar"] label {
+        color: #c8cdd3 !important;
+    }
+
+    /* Card component */
+    .metric-card {
+        background: linear-gradient(135deg, #1e2738 0%, #1a2332 100%);
+        border: 1px solid #2a3a4a;
+        border-radius: 12px;
+        padding: 1.2rem 1.4rem;
+        margin-bottom: 0.8rem;
+    }
+    .metric-card h4 {
+        color: #7b8794;
+        font-size: 0.8rem;
+        font-weight: 500;
+        text-transform: uppercase;
+        letter-spacing: 0.05em;
+        margin: 0 0 0.4rem 0;
+    }
+    .metric-card .value {
+        font-size: 1.6rem;
+        font-weight: 700;
+        color: #e8ecf1;
+        margin: 0;
+    }
+    .metric-card .sub {
+        font-size: 0.8rem;
+        color: #5a6b7d;
+        margin-top: 0.2rem;
+    }
+
+    /* Regime banner */
+    .regime-banner {
+        border-radius: 12px;
+        padding: 1rem 1.5rem;
+        margin-bottom: 1rem;
+        display: flex;
+        align-items: center;
+        gap: 1.5rem;
+    }
+    .regime-trending-up {
+        background: linear-gradient(135deg, #0d3b1e 0%, #1a4a2e 100%);
+        border: 1px solid #2a6b3e;
+    }
+    .regime-trending-down {
+        background: linear-gradient(135deg, #3b0d0d 0%, #4a1a1a 100%);
+        border: 1px solid #6b2a2a;
+    }
+    .regime-range-bound {
+        background: linear-gradient(135deg, #2a2a0d 0%, #3a3a1a 100%);
+        border: 1px solid #5a5a2a;
+    }
+    .regime-high-volatility {
+        background: linear-gradient(135deg, #3b1e0d 0%, #4a2a1a 100%);
+        border: 1px solid #6b3e2a;
+    }
+    .regime-unknown {
+        background: linear-gradient(135deg, #1e2738 0%, #1a2332 100%);
+        border: 1px solid #2a3a4a;
+    }
+    .regime-banner .regime-label {
+        font-size: 1.1rem;
+        font-weight: 700;
+        color: #e8ecf1;
+    }
+    .regime-banner .regime-detail {
+        font-size: 0.85rem;
+        color: #9aa5b4;
+    }
+
+    /* Signal badges */
+    .signal-strong-buy { color: #00c853; font-weight: 700; }
+    .signal-buy { color: #4caf50; font-weight: 600; }
+    .signal-hold { color: #9e9e9e; }
+    .signal-sell { color: #ef5350; font-weight: 600; }
+    .signal-strong-sell { color: #d32f2f; font-weight: 700; }
+
+    /* Section headers */
+    .section-header {
+        font-size: 1.1rem;
+        font-weight: 600;
+        color: #c8cdd3;
+        border-bottom: 1px solid #2a3a4a;
+        padding-bottom: 0.5rem;
+        margin: 1.5rem 0 1rem 0;
+    }
+
+    /* Status dot */
+    .status-dot {
+        display: inline-block;
+        width: 8px;
+        height: 8px;
+        border-radius: 50%;
+        margin-right: 6px;
+    }
+    .dot-green { background: #00c853; }
+    .dot-red { background: #d32f2f; }
+    .dot-yellow { background: #ffc107; }
+    .dot-gray { background: #616161; }
+
+    /* Data tables */
+    .stDataFrame { border-radius: 8px; overflow: hidden; }
+
+    /* Hide Streamlit branding */
+    #MainMenu { visibility: hidden; }
+    footer { visibility: hidden; }
+
+    /* Tab styling */
+    .stTabs [data-baseweb="tab-list"] {
+        gap: 2rem;
+    }
+    .stTabs [data-baseweb="tab"] {
+        height: 40px;
+        padding-left: 0;
+        padding-right: 0;
+    }
+</style>
+""", unsafe_allow_html=True)
+
 
 # --- Init ---
 state.init_db()
@@ -34,97 +169,306 @@ settings = Settings.load()
 
 
 # ============================================================
-# Sidebar - Navigation + Risk Settings
-# ============================================================
-with st.sidebar:
-    st.title("Stock Agent")
-    page = st.radio(
-        "Navigate",
-        ["Ticker Analysis", "Market Scan", "Portfolio", "Engine Performance",
-         "Backtest", "Discovery", "Settings"],
-        index=0,
-    )
-    st.divider()
-
-    # Show regime info
-    try:
-        from engines.regime import detect_regime
-        regime = detect_regime()
-        st.caption(f"Regime: `{regime.regime.value}`")
-        st.caption(f"VIX: `{regime.vix_level:.1f}`")
-        st.caption(f"Breadth: `{regime.breadth_pct:.0%}`")
-        st.caption(f"Credit: `{regime.credit_stress:.2f}`")
-        st.caption(f"YC: `{'INV' if regime.yield_curve_inverted else 'OK'}`")
-        st.caption(f"VTS: `{regime.vix_term_structure}`")
-        st.caption(f"Risk: `{regime.risk_appetite}`")
-        if regime.block_buys:
-            st.error("BUY signals blocked (VIX > 35)")
-    except Exception:
-        st.caption("Regime: loading...")
-
-    st.divider()
-    st.caption(f"LLM Mode: `{settings.llm_mode.value}`")
-    st.caption(f"Max Position: {settings.risk.max_position_pct:.0%}")
-    st.caption(f"Max Positions: {settings.risk.max_simultaneous_positions}")
-    st.caption(f"Drawdown Breaker: {settings.risk.drawdown_circuit_breaker:.0%}")
-
-
-# ============================================================
 # Helper functions
 # ============================================================
+
+def card(title: str, value: str, sub: str = "", color: str = "") -> str:
+    """Generate HTML for a metric card."""
+    style = f'color: {color};' if color else ''
+    return f"""
+    <div class="metric-card">
+        <h4>{title}</h4>
+        <p class="value" style="{style}">{value}</p>
+        {'<p class="sub">' + sub + '</p>' if sub else ''}
+    </div>
+    """
+
+
+def regime_banner(regime_info) -> str:
+    """Generate HTML for the regime status banner."""
+    regime_name = regime_info.regime.value
+    css_class = f"regime-{regime_name.lower().replace('_', '-')}"
+
+    indicators = []
+    indicators.append(f"VIX {regime_info.vix_level:.1f}")
+    indicators.append(f"Breadth {regime_info.breadth_pct:.0%}")
+    indicators.append(f"SPY {regime_info.spy_trend}")
+    indicators.append(f"Credit {regime_info.credit_stress:.2f}")
+    indicators.append(f"YC {'INV' if regime_info.yield_curve_inverted else 'OK'}")
+    indicators.append(f"VTS {regime_info.vix_term_structure}")
+
+    block_warning = ""
+    if regime_info.block_buys:
+        block_warning = '<span style="color: #ef5350; font-weight: 600; margin-left: 1rem;">BUY SIGNALS BLOCKED</span>'
+
+    return f"""
+    <div class="regime-banner {css_class}">
+        <div>
+            <div class="regime-label">{regime_name.replace('_', ' ')}{block_warning}</div>
+            <div class="regime-detail">{' · '.join(indicators)}</div>
+        </div>
+    </div>
+    """
+
+
+def signal_badge(action: str) -> str:
+    """Return styled signal text."""
+    css = f"signal-{action.lower().replace('_', '-')}"
+    return f'<span class="{css}">{action}</span>'
+
+
 def signal_color(action: str) -> str:
-    if action in ("STRONG_BUY", "BUY"):
-        return "green"
-    elif action in ("STRONG_SELL", "SELL"):
-        return "red"
-    return "gray"
+    colors = {
+        "STRONG_BUY": "#00c853", "BUY": "#4caf50",
+        "HOLD": "#9e9e9e",
+        "SELL": "#ef5350", "STRONG_SELL": "#d32f2f",
+    }
+    return colors.get(action, "#9e9e9e")
 
 
 def render_engine_results(sig: CombinedSignal):
-    """Render engine results as a table."""
+    """Render engine results as a styled table."""
     rows = []
     for name, result in sig.engine_results.items():
         rows.append({
             "Engine": name.replace("_", " ").title(),
             "Signal": result.signal,
             "Confidence": f"{result.confidence:.0%}",
-            "Reasons": ", ".join(result.reasons[:3]) if result.reasons else "-",
+            "Score": f"{result.numeric_signal:+.1f}",
+            "Top Reason": result.reasons[0] if result.reasons else "-",
         })
     df = pd.DataFrame(rows)
     st.dataframe(df, use_container_width=True, hide_index=True)
 
 
-def render_combined_signal(sig: CombinedSignal):
-    """Render the combined signal with metrics."""
+# ============================================================
+# Sidebar
+# ============================================================
+with st.sidebar:
+    st.markdown("### Stock Agent")
+
+    page = st.radio(
+        "Navigate",
+        ["Dashboard", "Analyze", "Scan", "Portfolio", "Backtest", "Discover", "Settings"],
+        index=0,
+        label_visibility="collapsed",
+    )
+
+    st.divider()
+
+    # Regime summary
+    try:
+        from engines.regime import detect_regime
+        regime = detect_regime()
+        st.markdown(f"**Regime:** {regime.regime.value.replace('_', ' ')}")
+        st.caption(f"VIX {regime.vix_level:.1f} · Breadth {regime.breadth_pct:.0%}")
+        if regime.block_buys:
+            st.error("Buys blocked (VIX > 35)")
+    except Exception:
+        st.caption("Regime: loading...")
+        regime = None
+
+    st.divider()
+    st.caption(f"LLM: {settings.llm_mode.value}")
+    st.caption(f"Risk: {settings.risk.max_position_pct:.0%} max pos")
+    st.caption(f"Positions: {settings.risk.max_simultaneous_positions} max")
+
+
+# ============================================================
+# Page: Dashboard (Home)
+# ============================================================
+if page == "Dashboard":
+    st.markdown("## Dashboard")
+
+    # Regime banner
+    try:
+        if regime:
+            st.markdown(regime_banner(regime), unsafe_allow_html=True)
+    except Exception:
+        pass
+
+    # Record regime for alerting
+    try:
+        from alerts.regime_alerts import record_regime
+        if regime:
+            change = record_regime(regime)
+            if change:
+                st.warning(f"Regime changed: {change['previous']} → {change['current']}")
+    except Exception:
+        pass
+
+    # Key metrics row
+    from portfolio.memory import (
+        get_engine_performance_summary, get_analysis_history,
+        compute_engine_accuracy, get_adaptive_weights, check_outcomes,
+    )
+    from portfolio.calibration import get_calibration_summary
+
+    history = get_analysis_history(limit=100)
+    perf = get_engine_performance_summary()
+    cal_summary = get_calibration_summary()
+
     col1, col2, col3, col4 = st.columns(4)
-    col1.metric("Action", sig.action)
-    col2.metric("Combined Score", f"{sig.combined_score:+.3f}")
-    col3.metric("Confidence", f"{sig.confidence:.0%}")
-    col4.metric("Agreement", f"{sig.agreement_pct:.0%}")
+    with col1:
+        st.markdown(card("Total Analyses", str(len(history)), "in database"), unsafe_allow_html=True)
+    with col2:
+        outcomes_count = sum(1 for h in history if h.get("actual_return_pct") is not None)
+        st.markdown(card("Outcomes Tracked", str(outcomes_count),
+                         f"{'Ready for adaptive' if outcomes_count >= 30 else f'{30 - outcomes_count} more needed'}"),
+                    unsafe_allow_html=True)
+    with col3:
+        if perf:
+            best = max(perf, key=lambda p: p.get("accuracy", 0))
+            st.markdown(card("Best Engine", best["engine_name"].replace("_", " ").title(),
+                             f"{best['accuracy']:.0%} accuracy"),
+                        unsafe_allow_html=True)
+        else:
+            st.markdown(card("Best Engine", "—", "No data yet"), unsafe_allow_html=True)
+    with col4:
+        adaptive = get_adaptive_weights()
+        status = "Active" if adaptive else "Collecting data"
+        dot = "dot-green" if adaptive else "dot-yellow"
+        st.markdown(card("Adaptive Learning",
+                         f'<span class="status-dot {dot}"></span>{status}',
+                         f"{outcomes_count}/30 samples"),
+                    unsafe_allow_html=True)
 
-    if sig.is_actionable:
-        st.success("ACTIONABLE - High confidence with engine agreement")
-    elif sig.action == "HOLD":
-        st.info("HOLD - No clear signal")
+    # Engine Performance Chart
+    if perf:
+        st.markdown('<div class="section-header">Engine Accuracy (Last 90 Days)</div>', unsafe_allow_html=True)
+
+        perf_df = pd.DataFrame([{
+            "Engine": p["engine_name"].replace("_", " ").title(),
+            "Accuracy": p["accuracy"],
+            "Signals": p["total_signals"],
+        } for p in perf])
+
+        bars = alt.Chart(perf_df).mark_bar(
+            cornerRadiusTopLeft=4, cornerRadiusTopRight=4,
+        ).encode(
+            x=alt.X("Engine:N", sort="-y", axis=alt.Axis(labelAngle=0)),
+            y=alt.Y("Accuracy:Q", scale=alt.Scale(domain=[0, 1]), axis=alt.Axis(format=".0%")),
+            color=alt.condition(
+                alt.datum.Accuracy >= 0.5,
+                alt.value("#4caf50"),
+                alt.value("#ef5350"),
+            ),
+            tooltip=["Engine", alt.Tooltip("Accuracy:Q", format=".1%"), "Signals"],
+        ).properties(height=280)
+
+        # Add 50% baseline
+        rule = alt.Chart(pd.DataFrame({"y": [0.5]})).mark_rule(
+            color="#5a6b7d", strokeDash=[4, 4]
+        ).encode(y="y:Q")
+
+        st.altair_chart(bars + rule, use_container_width=True)
+
+    # Confidence Calibration
+    cal_data = cal_summary.get("buckets", [])
+    if cal_data and cal_summary.get("total_outcomes", 0) >= 10:
+        st.markdown('<div class="section-header">Confidence Calibration</div>', unsafe_allow_html=True)
+
+        col1, col2 = st.columns([2, 1])
+        with col1:
+            cal_df = pd.DataFrame(cal_data)
+            if not cal_df.empty:
+                cal_chart_df = cal_df.melt(
+                    id_vars=["bucket", "count"],
+                    value_vars=["predicted_avg", "actual_win_rate"],
+                    var_name="Type",
+                    value_name="Rate",
+                )
+                cal_chart_df["Type"] = cal_chart_df["Type"].map({
+                    "predicted_avg": "Predicted Confidence",
+                    "actual_win_rate": "Actual Win Rate",
+                })
+
+                cal_chart = alt.Chart(cal_chart_df).mark_bar(
+                    cornerRadiusTopLeft=3, cornerRadiusTopRight=3,
+                ).encode(
+                    x=alt.X("bucket:N", title="Confidence Bucket", axis=alt.Axis(labelAngle=0)),
+                    y=alt.Y("Rate:Q", title="Rate", axis=alt.Axis(format=".0%")),
+                    color=alt.Color("Type:N", scale=alt.Scale(
+                        domain=["Predicted Confidence", "Actual Win Rate"],
+                        range=["#5a6b7d", "#4caf50"],
+                    )),
+                    xOffset="Type:N",
+                    tooltip=["bucket", "Type", alt.Tooltip("Rate:Q", format=".1%"), "count"],
+                ).properties(height=250)
+
+                st.altair_chart(cal_chart, use_container_width=True)
+
+        with col2:
+            overconf = cal_summary.get("avg_overconfidence", 0)
+            if overconf > 0.05:
+                st.warning(f"System is overconfident by {overconf:.1%}")
+            elif overconf < -0.05:
+                st.info(f"System is underconfident by {abs(overconf):.1%}")
+            else:
+                st.success("Confidence is well-calibrated")
+
+            st.caption(f"Based on {cal_summary.get('total_outcomes', 0)} outcomes")
+            if cal_summary.get("worst_bucket"):
+                st.caption(f"Worst bucket: {cal_summary['worst_bucket']} (off by {cal_summary.get('worst_diff', 0):+.1%})")
+
+    # Recent signal history
+    st.markdown('<div class="section-header">Recent Analyses</div>', unsafe_allow_html=True)
+
+    if history:
+        recent_rows = []
+        for h in history[:15]:
+            outcome = ""
+            if h.get("actual_return_pct") is not None:
+                ret = h["actual_return_pct"]
+                correct = h.get("signal_correct")
+                icon = "+" if correct else "-"
+                outcome = f"{icon} {ret:+.1%}"
+
+            recent_rows.append({
+                "Date": h["analysis_date"][:10] if h.get("analysis_date") else "",
+                "Symbol": h.get("symbol", ""),
+                "Action": h.get("action", ""),
+                "Score": f"{h['combined_score']:+.3f}" if h.get("combined_score") is not None else "",
+                "Confidence": f"{h['confidence']:.0%}" if h.get("confidence") is not None else "",
+                "Regime": h.get("regime", ""),
+                "Outcome (5d)": outcome,
+            })
+        st.dataframe(pd.DataFrame(recent_rows), use_container_width=True, hide_index=True)
     else:
-        st.warning("Low confidence - not actionable")
+        st.info("No analyses yet. Use the **Analyze** tab to start building your history.")
+
+    # Regime change log
+    try:
+        from alerts.regime_alerts import get_regime_changes
+        changes = get_regime_changes(limit=5)
+        if changes:
+            st.markdown('<div class="section-header">Recent Regime Changes</div>', unsafe_allow_html=True)
+            for c in changes:
+                ts = c["timestamp"][:16] if c.get("timestamp") else ""
+                st.markdown(
+                    f"`{ts}` — **{c['from_regime']}** → **{c['to_regime']}** "
+                    f"(VIX {c.get('vix', 0):.1f}, Breadth {c.get('breadth', 0):.0%})"
+                )
+    except Exception:
+        pass
 
 
 # ============================================================
-# Page: Ticker Analysis
+# Page: Analyze
 # ============================================================
-if page == "Ticker Analysis":
-    st.header("Ticker Analysis")
-    st.caption("Run all 5 engines + regime detection + multi-timeframe confirmation")
+elif page == "Analyze":
+    st.markdown("## Ticker Analysis")
+    st.caption("All 5 engines + regime detection + multi-timeframe confirmation")
 
     col1, col2 = st.columns([3, 1])
     with col1:
-        symbol = st.text_input("Enter ticker symbol", value="NVDA", max_chars=10).strip().upper()
+        symbol = st.text_input("Ticker", value="NVDA", max_chars=10,
+                               placeholder="Enter ticker symbol...").strip().upper()
     with col2:
         analyze_btn = st.button("Analyze", type="primary", use_container_width=True)
 
     if analyze_btn and symbol:
-        with st.spinner(f"Analyzing {symbol} across 5 engines..."):
+        with st.spinner(f"Analyzing {symbol}..."):
             from portfolio.memory import get_adaptive_weights, save_analysis, check_outcomes
             check_outcomes()
             adaptive_weights = get_adaptive_weights()
@@ -133,32 +477,38 @@ if page == "Ticker Analysis":
             sig = combiner.analyze(symbol, adaptive_weights=adaptive_weights)
             sig = apply_timeframe_filter(sig)
 
-        st.subheader(f"Results: {symbol}")
-
-        # Regime info
+        # Regime banner
         if sig.regime:
-            col1, col2, col3, col4 = st.columns(4)
-            col1.metric("Regime", sig.regime.regime.value)
-            col2.metric("VIX", f"{sig.regime.vix_level:.1f}")
-            col3.metric("SPY Trend", sig.regime.spy_trend)
-            col4.metric("Breadth", f"{sig.regime.breadth_pct:.0%}")
+            st.markdown(regime_banner(sig.regime), unsafe_allow_html=True)
 
-            # Lead indicators
-            col5, col6, col7, col8 = st.columns(4)
-            col5.metric("Credit Stress", f"{sig.regime.credit_stress:.2f}")
-            col6.metric("Yield Curve", "INVERTED" if sig.regime.yield_curve_inverted else "Normal")
-            col7.metric("VIX Term", sig.regime.vix_term_structure)
-            col8.metric("Risk Appetite", sig.regime.risk_appetite)
+        # Main signal
+        col1, col2, col3, col4 = st.columns(4)
+        with col1:
+            st.markdown(card("Action", sig.action, color=signal_color(sig.action)),
+                        unsafe_allow_html=True)
+        with col2:
+            st.markdown(card("Score", f"{sig.combined_score:+.3f}"), unsafe_allow_html=True)
+        with col3:
+            st.markdown(card("Confidence", f"{sig.confidence:.0%}"), unsafe_allow_html=True)
+        with col4:
+            st.markdown(card("Agreement", f"{sig.agreement_pct:.0%}"), unsafe_allow_html=True)
 
-        render_combined_signal(sig)
+        if sig.is_actionable:
+            st.success("ACTIONABLE — High confidence with engine agreement")
+        elif sig.action == "HOLD":
+            st.info("HOLD — No clear signal")
+        else:
+            st.warning("Low confidence — not actionable")
 
-        st.subheader("Engine Breakdown")
+        # Engine breakdown
+        st.markdown('<div class="section-header">Engine Breakdown</div>', unsafe_allow_html=True)
         render_engine_results(sig)
 
+        # Reasons
         if sig.reasons:
-            st.subheader("Top Reasons")
-            for r in sig.reasons[:10]:
-                st.markdown(f"- {r}")
+            with st.expander("Signal Reasoning", expanded=False):
+                for r in sig.reasons[:10]:
+                    st.markdown(f"- {r}")
 
         # Save analysis
         price = 0
@@ -172,9 +522,9 @@ if page == "Ticker Analysis":
             close_price=price, regime=regime_str, engine_results=sig.engine_results,
         )
 
-        # Risk check for actionable signals
+        # Risk check
         if sig.is_actionable and sig.action in ("STRONG_BUY", "BUY"):
-            st.subheader("Risk Assessment")
+            st.markdown('<div class="section-header">Risk Assessment</div>', unsafe_allow_html=True)
             rm = RiskManager(settings.risk)
             entry = momentum_result.metadata.get("entry", 0) if momentum_result else 0
             if entry > 0:
@@ -184,52 +534,46 @@ if page == "Ticker Analysis":
                 check = rm.check_can_open_position(symbol, proposed_value)
 
                 if check["allowed"]:
-                    st.success(f"Risk check PASSED: {qty} shares @ ${entry:.2f}, stop ${stop:.2f}")
+                    st.success(f"Risk check passed: {qty} shares @ ${entry:.2f}, stop ${stop:.2f}")
                 else:
-                    st.error("Risk check BLOCKED:")
+                    st.error("Risk check blocked:")
                     for reason in check["reasons"]:
                         st.markdown(f"- {reason}")
 
                 col1, col2, col3 = st.columns(3)
-                col1.metric("Suggested Qty", qty)
-                col2.metric("Entry Price", f"${entry:.2f}")
-                col3.metric("Stop Loss", f"${stop:.2f}")
-
-                # Show trailing stop level
-                from portfolio.exits import calculate_trailing_stop_level
-                trail = calculate_trailing_stop_level(symbol, entry, "")
-                if trail:
-                    st.metric("Trailing Stop", f"${trail:.2f}")
+                with col1:
+                    st.markdown(card("Qty", str(qty)), unsafe_allow_html=True)
+                with col2:
+                    st.markdown(card("Entry", f"${entry:.2f}"), unsafe_allow_html=True)
+                with col3:
+                    st.markdown(card("Stop Loss", f"${stop:.2f}"), unsafe_allow_html=True)
 
 
 # ============================================================
 # Page: Market Scan
 # ============================================================
-elif page == "Market Scan":
-    st.header("Market Scan")
-    st.caption("Scan your watchlist with regime-aware analysis")
+elif page == "Scan":
+    st.markdown("## Market Scan")
+    st.caption("Scan watchlist packages with regime-aware analysis")
 
     from config.watchlists import list_packages_by_region, PACKAGE_META, get_package_symbols
 
-    # Package selector - require explicit selection
     pkg_options = {}
     for region, pkgs in list_packages_by_region().items():
         for key, name, count in pkgs:
-            pkg_options[f"{name} ({count} symbols) [{region}]"] = key
+            pkg_options[f"{name} ({count}) [{region}]"] = key
 
     col1, col2 = st.columns([1, 1])
     with col1:
         selected_pkg_label = st.selectbox(
-            "Select a package to scan",
-            list(pkg_options.keys()),
-            index=None,
-            placeholder="Choose a package...",
+            "Package", list(pkg_options.keys()),
+            index=None, placeholder="Choose a package...",
         )
     with col2:
-        top_n = st.slider("Show top N results", min_value=3, max_value=30, value=10)
+        top_n = st.slider("Top N results", min_value=3, max_value=30, value=10)
 
     if not selected_pkg_label:
-        st.info("Select a package above to start scanning. Use the **Packages** page or `python stock_agent.py packages` to browse all 83 packages.")
+        st.info("Select a package to start scanning.")
 
     scan_btn = st.button("Scan", type="primary", use_container_width=True, disabled=not selected_pkg_label)
 
@@ -239,17 +583,16 @@ elif page == "Market Scan":
         check_outcomes()
         adaptive_weights = get_adaptive_weights()
 
-        progress_bar = st.progress(0, text="Scanning...")
+        progress = st.progress(0, text="Starting scan...")
         combiner = SignalCombiner()
 
         # Show regime
-        regime = combiner.regime_info
-        st.info(f"Regime: **{regime.regime.value}** | VIX: {regime.vix_level:.1f} | "
-                f"Breadth: {regime.breadth_pct:.0%} | SPY: {regime.spy_trend}")
+        r = combiner.regime_info
+        st.markdown(regime_banner(r), unsafe_allow_html=True)
 
         signals = []
         watchlist = get_package_symbols([selected_pkg])
-        st.caption(f"Scanning: **{PACKAGE_META.get(selected_pkg, {}).get('name', selected_pkg)}** ({len(watchlist)} symbols)")
+        st.caption(f"Scanning {len(watchlist)} symbols...")
 
         for i, sym in enumerate(watchlist):
             try:
@@ -258,13 +601,21 @@ elif page == "Market Scan":
                 signals.append(sig)
             except Exception:
                 pass
-            progress_bar.progress((i + 1) / len(watchlist), text=f"Analyzing {sym}...")
+            progress.progress((i + 1) / len(watchlist), text=f"Analyzing {sym}...")
 
-        progress_bar.empty()
+        progress.empty()
         signals.sort(key=lambda s: s.combined_score, reverse=True)
 
         actionable = [s for s in signals if s.is_actionable]
-        st.metric("Actionable Signals", len(actionable), delta=f"of {len(signals)} scanned")
+        col1, col2 = st.columns(2)
+        with col1:
+            st.markdown(card("Actionable", str(len(actionable)), f"of {len(signals)} scanned"),
+                        unsafe_allow_html=True)
+        with col2:
+            buys = sum(1 for s in signals if s.action in ("BUY", "STRONG_BUY"))
+            sells = sum(1 for s in signals if s.action in ("SELL", "STRONG_SELL"))
+            st.markdown(card("Direction", f"{buys} buy / {sells} sell"),
+                        unsafe_allow_html=True)
 
         # Results table
         rows = []
@@ -276,25 +627,29 @@ elif page == "Market Scan":
                 "Confidence": f"{sig.confidence:.0%}",
                 "Agreement": f"{sig.agreement_pct:.0%}",
                 "Actionable": "Yes" if sig.is_actionable else "",
-                "Top Reason": sig.reasons[1] if len(sig.reasons) > 1 else (sig.reasons[0] if sig.reasons else "-"),
+                "Reason": sig.reasons[1] if len(sig.reasons) > 1 else (sig.reasons[0] if sig.reasons else "-"),
             })
 
         if rows:
             st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
 
-        # Detailed view for top 3
-        st.subheader("Top 3 Detailed")
-        for sig in signals[:3]:
-            with st.expander(f"{sig.symbol} - {sig.action} ({sig.combined_score:+.3f})"):
-                render_combined_signal(sig)
-                render_engine_results(sig)
+        # Top 3 detail
+        if signals[:3]:
+            st.markdown('<div class="section-header">Top 3 Detailed</div>', unsafe_allow_html=True)
+            for sig in signals[:3]:
+                with st.expander(f"{sig.symbol} — {sig.action} ({sig.combined_score:+.3f})"):
+                    col1, col2, col3 = st.columns(3)
+                    col1.metric("Score", f"{sig.combined_score:+.3f}")
+                    col2.metric("Confidence", f"{sig.confidence:.0%}")
+                    col3.metric("Agreement", f"{sig.agreement_pct:.0%}")
+                    render_engine_results(sig)
 
 
 # ============================================================
 # Page: Portfolio
 # ============================================================
 elif page == "Portfolio":
-    st.header("Portfolio")
+    st.markdown("## Portfolio")
 
     tab1, tab2, tab3 = st.tabs(["Overview", "Trade History", "Exit Signals"])
 
@@ -302,17 +657,22 @@ elif page == "Portfolio":
         summary = get_portfolio_summary()
 
         col1, col2, col3, col4 = st.columns(4)
-        col1.metric("Total Value", f"${summary['total_value']:,.2f}")
-        col2.metric("Cash", f"${summary['cash']:,.2f}")
-        col3.metric("Positions", f"${summary['position_value']:,.2f}")
-        col4.metric("Drawdown", f"{summary['drawdown']:.1%}")
-
-        col5, col6 = st.columns(2)
-        col5.metric("Unrealized PnL", f"${summary['unrealized_pnl']:,.2f}")
-        col6.metric("Open Positions", summary['position_count'])
+        with col1:
+            st.markdown(card("Total Value", f"${summary['total_value']:,.0f}"),
+                        unsafe_allow_html=True)
+        with col2:
+            st.markdown(card("Cash", f"${summary['cash']:,.0f}"),
+                        unsafe_allow_html=True)
+        with col3:
+            st.markdown(card("Invested", f"${summary['position_value']:,.0f}"),
+                        unsafe_allow_html=True)
+        with col4:
+            dd_color = "#ef5350" if summary['drawdown'] < -0.05 else "#9e9e9e"
+            st.markdown(card("Drawdown", f"{summary['drawdown']:.1%}", color=dd_color),
+                        unsafe_allow_html=True)
 
         if summary["positions"]:
-            st.subheader("Open Positions")
+            st.markdown('<div class="section-header">Open Positions</div>', unsafe_allow_html=True)
             pos_df = pd.DataFrame(summary["positions"])
             pos_df.columns = ["Symbol", "Qty", "Entry", "Current", "PnL ($)", "PnL (%)"]
             st.dataframe(pos_df, use_container_width=True, hide_index=True)
@@ -324,27 +684,37 @@ elif page == "Portfolio":
 
         if stats.get("total_trades", 0) > 0:
             col1, col2, col3, col4 = st.columns(4)
-            col1.metric("Total Trades", stats["total_trades"])
-            col2.metric("Win Rate", f"{stats['win_rate']:.0%}")
-            col3.metric("Total PnL", f"${stats['total_pnl']:,.2f}")
-            col4.metric("Profit Factor", f"{stats['profit_factor']:.2f}")
-
-            col5, col6, col7 = st.columns(3)
-            col5.metric("Avg Win", f"${stats['avg_win']:,.2f}")
-            col6.metric("Avg Loss", f"${stats['avg_loss']:,.2f}")
-            col7.metric("Sharpe Ratio", f"{sharpe_ratio():.2f}")
+            with col1:
+                st.markdown(card("Trades", str(stats["total_trades"])), unsafe_allow_html=True)
+            with col2:
+                wr_color = "#4caf50" if stats['win_rate'] >= 0.5 else "#ef5350"
+                st.markdown(card("Win Rate", f"{stats['win_rate']:.0%}", color=wr_color),
+                            unsafe_allow_html=True)
+            with col3:
+                pnl_color = "#4caf50" if stats['total_pnl'] >= 0 else "#ef5350"
+                st.markdown(card("Total PnL", f"${stats['total_pnl']:,.0f}", color=pnl_color),
+                            unsafe_allow_html=True)
+            with col4:
+                st.markdown(card("Sharpe", f"{sharpe_ratio():.2f}"), unsafe_allow_html=True)
 
             spy_data = vs_spy()
-            st.subheader("vs SPY")
             col1, col2, col3 = st.columns(3)
-            col1.metric("SPY Return", f"{spy_data.get('spy_return', 0):.1%}")
-            col2.metric("Portfolio Return", f"{spy_data.get('portfolio_return', 0):.1%}")
-            col3.metric("Excess Return", f"{spy_data.get('excess_return', 0):.1%}")
+            with col1:
+                st.markdown(card("SPY Return", f"{spy_data.get('spy_return', 0):.1%}"),
+                            unsafe_allow_html=True)
+            with col2:
+                st.markdown(card("Portfolio Return", f"{spy_data.get('portfolio_return', 0):.1%}"),
+                            unsafe_allow_html=True)
+            with col3:
+                excess = spy_data.get('excess_return', 0)
+                ex_color = "#4caf50" if excess >= 0 else "#ef5350"
+                st.markdown(card("Excess Return", f"{excess:+.1%}", color=ex_color),
+                            unsafe_allow_html=True)
         else:
             st.info("No trade history yet")
 
     with tab3:
-        st.subheader("Active Exit Signals")
+        st.markdown('<div class="section-header">Active Exit Signals</div>', unsafe_allow_html=True)
         rm = RiskManager(settings.risk)
         exits = rm.check_exit_signals()
         if exits:
@@ -364,161 +734,91 @@ elif page == "Portfolio":
 
 
 # ============================================================
-# Page: Engine Performance
-# ============================================================
-elif page == "Engine Performance":
-    st.header("Engine Performance")
-    st.caption("Track how each engine performs over time - the learning system")
-
-    from portfolio.memory import (
-        get_engine_performance_summary, compute_engine_accuracy,
-        get_analysis_history, check_outcomes,
-    )
-
-    col1, col2 = st.columns([3, 1])
-    with col2:
-        if st.button("Refresh Data", type="primary"):
-            check_outcomes()
-            compute_engine_accuracy()
-            st.rerun()
-
-    # Engine accuracy
-    perf = get_engine_performance_summary()
-    if perf:
-        st.subheader("Engine Accuracy (last 90 days)")
-        perf_rows = []
-        for p in perf:
-            perf_rows.append({
-                "Engine": p["engine_name"].replace("_", " ").title(),
-                "Accuracy": f"{p['accuracy']:.0%}",
-                "Signals": p["total_signals"],
-                "Correct": p["correct_signals"],
-                "Avg Return (Correct)": f"{p['avg_return_when_correct']:+.1%}" if p['avg_return_when_correct'] else "-",
-                "Avg Return (Wrong)": f"{p['avg_return_when_wrong']:+.1%}" if p['avg_return_when_wrong'] else "-",
-            })
-        st.dataframe(pd.DataFrame(perf_rows), use_container_width=True, hide_index=True)
-
-        # Adaptive weights
-        from portfolio.memory import get_adaptive_weights
-        adaptive = get_adaptive_weights()
-        if adaptive:
-            st.subheader("Adaptive Weights")
-            from engines.signal_combiner import DEFAULT_WEIGHTS
-            weight_rows = []
-            for eng in DEFAULT_WEIGHTS:
-                weight_rows.append({
-                    "Engine": eng.replace("_", " ").title(),
-                    "Default Weight": f"{DEFAULT_WEIGHTS[eng]:.0%}",
-                    "Adaptive Weight": f"{adaptive.get(eng, DEFAULT_WEIGHTS[eng]):.0%}",
-                    "Change": f"{(adaptive.get(eng, DEFAULT_WEIGHTS[eng]) - DEFAULT_WEIGHTS[eng]):+.0%}",
-                })
-            st.dataframe(pd.DataFrame(weight_rows), use_container_width=True, hide_index=True)
-    else:
-        st.info("No engine performance data yet. Run some analyses first, then check back after 5+ days.")
-
-    # Recent analysis history
-    st.subheader("Recent Analysis History")
-    history = get_analysis_history(limit=20)
-    if history:
-        hist_rows = []
-        for h in history:
-            outcome = ""
-            if h.get("actual_return_pct") is not None:
-                ret = h["actual_return_pct"]
-                correct = h.get("signal_correct")
-                outcome = f"{ret:+.1%} {'correct' if correct else 'wrong'}"
-
-            hist_rows.append({
-                "Date": h["analysis_date"][:10] if h.get("analysis_date") else "",
-                "Symbol": h.get("symbol", ""),
-                "Action": h.get("action", ""),
-                "Score": f"{h['combined_score']:+.3f}" if h.get("combined_score") is not None else "",
-                "Confidence": f"{h['confidence']:.0%}" if h.get("confidence") is not None else "",
-                "Regime": h.get("regime", ""),
-                "5-Day Outcome": outcome,
-            })
-        st.dataframe(pd.DataFrame(hist_rows), use_container_width=True, hide_index=True)
-    else:
-        st.info("No analysis history yet")
-
-
-# ============================================================
 # Page: Backtest
 # ============================================================
 elif page == "Backtest":
-    st.header("Backtesting")
-    st.caption("Walk-forward backtest to validate the system")
+    st.markdown("## Backtest")
+    st.caption("Walk-forward validation of the signal system")
 
-    from config.watchlists import list_packages_by_region, PACKAGE_META, get_package_symbols as bt_get_pkg_symbols
+    from config.watchlists import list_packages_by_region, PACKAGE_META, get_package_symbols as bt_get_pkg
 
     bt_pkg_options = {}
     for region, pkgs in list_packages_by_region().items():
         for key, name, count in pkgs:
-            bt_pkg_options[f"{name} ({count} symbols) [{region}]"] = key
+            bt_pkg_options[f"{name} ({count}) [{region}]"] = key
 
-    col1, col2, col3 = st.columns([1, 1, 1])
+    col1, col2, col3 = st.columns(3)
     with col1:
-        months = st.slider("Backtest Period (months)", min_value=3, max_value=24, value=12)
+        months = st.slider("Period (months)", 3, 24, 12)
     with col2:
-        symbols_option = st.selectbox("Symbols", ["Select Package", "Custom"])
+        src = st.selectbox("Symbols", ["Package", "Custom"])
     with col3:
-        bt_mode = st.radio("Mode", ["Full (real combiner)", "Fast (quick score)"], index=1,
-                           help="Full uses real 5-engine combiner with slippage/commission. Fast uses simplified scoring.")
+        bt_mode = st.radio("Mode", ["Full", "Fast"], index=1,
+                           help="Full = real 5-engine combiner. Fast = simplified scoring.")
 
-    if symbols_option == "Custom":
-        custom_syms = st.text_input("Enter symbols (comma-separated)", value="NVDA,AAPL,MSFT,TSLA,AMD")
-        symbols = [s.strip().upper() for s in custom_syms.split(",") if s.strip()]
+    if src == "Custom":
+        custom = st.text_input("Symbols (comma-separated)", value="NVDA,AAPL,MSFT,TSLA,AMD")
+        symbols = [s.strip().upper() for s in custom.split(",") if s.strip()]
     else:
-        bt_pkg_label = st.selectbox("Package", list(bt_pkg_options.keys()), index=None,
-                                     placeholder="Choose a package...", key="bt_pkg")
-        if bt_pkg_label:
-            symbols = bt_get_pkg_symbols([bt_pkg_options[bt_pkg_label]])
-        else:
-            symbols = []
+        bt_label = st.selectbox("Package", list(bt_pkg_options.keys()),
+                                index=None, placeholder="Choose...", key="bt_pkg")
+        symbols = bt_get_pkg([bt_pkg_options[bt_label]]) if bt_label else []
 
     run_btn = st.button("Run Backtest", type="primary", use_container_width=True, disabled=len(symbols) == 0)
 
     if run_btn and symbols:
-        from portfolio.backtest import run_backtest, format_backtest_report
+        from portfolio.backtest import run_backtest
 
-        fast_mode = "Fast" in bt_mode
-        mode_label = "fast" if fast_mode else "full"
-        with st.spinner(f"Running {mode_label} backtest on {len(symbols)} symbols for {months} months..."):
-            result = run_backtest(symbols=symbols, months=months, fast=fast_mode)
+        fast = "Fast" in bt_mode
+        with st.spinner(f"Running {'fast' if fast else 'full'} backtest on {len(symbols)} symbols..."):
+            result = run_backtest(symbols=symbols, months=months, fast=fast)
 
-        st.caption(f"Mode: **{result.mode.upper()}** {'(simplified scoring)' if result.mode == 'fast' else '(real 5-engine combiner)'}")
-
-        # Summary metrics
+        # Results
         col1, col2, col3, col4 = st.columns(4)
-        col1.metric("Total Return", f"{result.total_return_pct:+.1%}")
-        col2.metric("SPY Return", f"{result.spy_return_pct:+.1%}")
-        col3.metric("Excess Return", f"{result.excess_return_pct:+.1%}",
-                     delta=f"vs SPY")
-        col4.metric("Sharpe Ratio", f"{result.sharpe_ratio:.2f}")
+        with col1:
+            ret_color = "#4caf50" if result.total_return_pct >= 0 else "#ef5350"
+            st.markdown(card("Return", f"{result.total_return_pct:+.1%}", color=ret_color),
+                        unsafe_allow_html=True)
+        with col2:
+            st.markdown(card("SPY", f"{result.spy_return_pct:+.1%}"), unsafe_allow_html=True)
+        with col3:
+            ex = result.excess_return_pct
+            ex_color = "#4caf50" if ex >= 0 else "#ef5350"
+            st.markdown(card("Excess", f"{ex:+.1%}", "vs SPY", color=ex_color),
+                        unsafe_allow_html=True)
+        with col4:
+            st.markdown(card("Sharpe", f"{result.sharpe_ratio:.2f}"), unsafe_allow_html=True)
 
         col5, col6, col7, col8 = st.columns(4)
-        col5.metric("Total Trades", result.total_trades)
-        col6.metric("Win Rate", f"{result.win_rate:.0%}")
-        col7.metric("Profit Factor", f"{result.profit_factor:.2f}")
-        col8.metric("Max Drawdown", f"{result.max_drawdown_pct:.1%}")
+        with col5:
+            st.markdown(card("Trades", str(result.total_trades)), unsafe_allow_html=True)
+        with col6:
+            wr_color = "#4caf50" if result.win_rate >= 0.5 else "#ef5350"
+            st.markdown(card("Win Rate", f"{result.win_rate:.0%}", color=wr_color),
+                        unsafe_allow_html=True)
+        with col7:
+            st.markdown(card("Profit Factor", f"{result.profit_factor:.2f}"), unsafe_allow_html=True)
+        with col8:
+            st.markdown(card("Max Drawdown", f"{result.max_drawdown_pct:.1%}", color="#ef5350"),
+                        unsafe_allow_html=True)
 
-        # Costs (full mode only)
+        # Costs
         if result.total_costs > 0:
-            st.subheader("Trading Costs")
-            total_slippage = sum(t.slippage_cost for t in result.trades)
-            total_commission = sum(t.commission_cost for t in result.trades)
+            st.markdown('<div class="section-header">Trading Costs</div>', unsafe_allow_html=True)
+            slip = sum(t.slippage_cost for t in result.trades)
+            comm = sum(t.commission_cost for t in result.trades)
             col1, col2, col3 = st.columns(3)
-            col1.metric("Total Costs", f"${result.total_costs:,.2f}")
-            col2.metric("Slippage", f"${total_slippage:,.2f}")
-            col3.metric("Commission", f"${total_commission:,.2f}")
+            col1.metric("Total", f"${result.total_costs:,.2f}")
+            col2.metric("Slippage", f"${slip:,.2f}")
+            col3.metric("Commission", f"${comm:,.2f}")
 
         # Regime breakdown
         if result.regime_breakdown:
-            st.subheader("Performance by Regime")
+            st.markdown('<div class="section-header">By Regime</div>', unsafe_allow_html=True)
             regime_rows = []
-            for regime, stats in sorted(result.regime_breakdown.items()):
+            for reg, stats in sorted(result.regime_breakdown.items()):
                 regime_rows.append({
-                    "Regime": regime,
+                    "Regime": reg,
                     "Trades": stats["trades"],
                     "Win Rate": f"{stats['win_rate']:.0%}",
                     "Avg Return": f"{stats['avg_return']:+.1%}",
@@ -527,13 +827,32 @@ elif page == "Backtest":
 
         # Equity curve
         if result.equity_curve:
-            st.subheader("Equity Curve")
-            eq_df = pd.DataFrame({"Portfolio Value": result.equity_curve})
-            st.line_chart(eq_df)
+            st.markdown('<div class="section-header">Equity Curve</div>', unsafe_allow_html=True)
+            eq_df = pd.DataFrame({
+                "Day": range(len(result.equity_curve)),
+                "Value": result.equity_curve,
+            })
+            eq_chart = alt.Chart(eq_df).mark_area(
+                line={"color": "#4caf50"},
+                color=alt.Gradient(
+                    gradient="linear",
+                    stops=[
+                        alt.GradientStop(color="rgba(76, 175, 80, 0.3)", offset=0),
+                        alt.GradientStop(color="rgba(76, 175, 80, 0.02)", offset=1),
+                    ],
+                    x1=1, x2=1, y1=1, y2=0,
+                ),
+            ).encode(
+                x=alt.X("Day:Q", title="Trading Days"),
+                y=alt.Y("Value:Q", title="Portfolio Value ($)", scale=alt.Scale(zero=False)),
+                tooltip=["Day", alt.Tooltip("Value:Q", format="$,.0f")],
+            ).properties(height=300)
+            st.altair_chart(eq_chart, use_container_width=True)
 
         # Trades table
         if result.trades:
-            st.subheader(f"All Trades ({len(result.trades)})")
+            st.markdown(f'<div class="section-header">Trades ({len(result.trades)})</div>',
+                        unsafe_allow_html=True)
             trade_rows = []
             for t in sorted(result.trades, key=lambda x: x.pnl_pct, reverse=True):
                 row = {
@@ -547,34 +866,33 @@ elif page == "Backtest":
                 }
                 if result.mode == "full":
                     row["Regime"] = t.regime
-                    row["Costs"] = f"${t.slippage_cost + t.commission_cost:.2f}"
                 trade_rows.append(row)
             st.dataframe(pd.DataFrame(trade_rows), use_container_width=True, hide_index=True)
 
 
 # ============================================================
-# Page: Discovery
+# Page: Discover
 # ============================================================
-elif page == "Discovery":
-    st.header("Opportunity Discovery")
-    st.caption("Find new tickers from news and Reddit")
+elif page == "Discover":
+    st.markdown("## Opportunity Discovery")
+    st.caption("Find trending tickers from Reddit and financial news")
 
     col1, col2 = st.columns(2)
 
     with col1:
+        st.markdown('<div class="section-header">Reddit</div>', unsafe_allow_html=True)
         if st.button("Scan Reddit", type="primary"):
-            with st.spinner("Scanning Reddit..."):
+            with st.spinner("Scanning subreddits..."):
                 from data.reddit import get_ticker_mentions
                 mentions = get_ticker_mentions()
 
             if mentions:
-                st.subheader(f"Trending Tickers ({len(mentions)})")
                 rows = []
                 for ticker, data in list(mentions.items())[:20]:
                     rows.append({
                         "Ticker": ticker,
                         "Mentions": data["count"],
-                        "Avg Score": f"{data['avg_score']:.0f}",
+                        "Score": f"{data['avg_score']:.0f}",
                         "Subreddits": ", ".join(data["subreddits"][:3]),
                     })
                 st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
@@ -582,18 +900,18 @@ elif page == "Discovery":
                 st.warning("No ticker mentions found")
 
     with col2:
+        st.markdown('<div class="section-header">News</div>', unsafe_allow_html=True)
         if st.button("Fetch News"):
-            with st.spinner("Fetching news..."):
+            with st.spinner("Fetching feeds..."):
                 from data.news import fetch_rss_news
                 news = fetch_rss_news(max_per_source=5)
 
             if news:
-                st.subheader(f"Latest News ({len(news)} articles)")
                 for item in news[:15]:
                     title = item.get("title", "")
                     source = item.get("source", "")
                     if title:
-                        st.markdown(f"**{source}**: {title}")
+                        st.markdown(f"**{source}** — {title}")
             else:
                 st.warning("Could not fetch news")
 
@@ -602,12 +920,11 @@ elif page == "Discovery":
 # Page: Settings
 # ============================================================
 elif page == "Settings":
-    st.header("Settings")
+    st.markdown("## Settings")
 
     env_path = os.path.join(os.path.dirname(__file__), ".env")
 
-    def _read_env_file():
-        """Read .env file into a dict (preserves comments as None values)."""
+    def _read_env():
         vals = {}
         if os.path.exists(env_path):
             with open(env_path) as f:
@@ -619,155 +936,156 @@ elif page == "Settings":
         return vals
 
     def _write_env(updates: dict):
-        """Update .env file, preserving comments and adding new keys."""
         lines = []
         if os.path.exists(env_path):
             with open(env_path) as f:
                 lines = f.readlines()
 
-        updated_keys = set()
+        updated = set()
         new_lines = []
         for line in lines:
-            stripped = line.strip()
-            if stripped and not stripped.startswith("#") and "=" in stripped:
-                key = stripped.partition("=")[0].strip()
+            s = line.strip()
+            if s and not s.startswith("#") and "=" in s:
+                key = s.partition("=")[0].strip()
                 if key in updates:
                     new_lines.append(f"{key}={updates[key]}\n")
-                    updated_keys.add(key)
+                    updated.add(key)
                 else:
                     new_lines.append(line)
             else:
                 new_lines.append(line)
 
         for key, val in updates.items():
-            if key not in updated_keys:
+            if key not in updated:
                 new_lines.append(f"{key}={val}\n")
 
         with open(env_path, "w") as f:
             f.writelines(new_lines)
 
-    # --- LLM Configuration ---
-    st.subheader("LLM Configuration")
-    llm_modes = {"off - $0/month (algorithmic only)": "off",
-                 "haiku - ~$0.0003/run (AI summaries)": "haiku",
-                 "sonnet - ~$0.01/run (deep AI analysis)": "sonnet"}
-    current_mode = settings.llm_mode.value
-    current_label = [k for k, v in llm_modes.items() if v == current_mode][0]
+    tab1, tab2, tab3, tab4 = st.tabs(["LLM", "Risk", "API Keys", "Alerts"])
 
-    selected_label = st.selectbox("LLM Mode", list(llm_modes.keys()),
-                                  index=list(llm_modes.keys()).index(current_label))
-    selected_mode = llm_modes[selected_label]
+    with tab1:
+        st.markdown('<div class="section-header">LLM Configuration</div>', unsafe_allow_html=True)
+        llm_modes = {"Off — $0 (algorithmic only)": "off",
+                     "Haiku — ~$0.0003/run": "haiku",
+                     "Sonnet — ~$0.01/run": "sonnet"}
+        current = settings.llm_mode.value
+        current_label = [k for k, v in llm_modes.items() if v == current][0]
 
-    api_key_val = settings.anthropic_api_key or ""
-    if selected_mode != "off":
-        api_key_val = st.text_input("Anthropic API Key", value=api_key_val, type="password",
-                                    help="Required for haiku/sonnet modes")
+        selected_label = st.selectbox("Mode", list(llm_modes.keys()),
+                                      index=list(llm_modes.keys()).index(current_label))
+        selected_mode = llm_modes[selected_label]
 
-    if st.button("Save LLM Settings"):
-        updates = {"LLM_MODE": selected_mode}
-        if selected_mode != "off" and api_key_val:
-            updates["ANTHROPIC_API_KEY"] = api_key_val
-        _write_env(updates)
-        st.success(f"Saved LLM_MODE={selected_mode}. Restart the app to apply.")
+        api_key_val = settings.anthropic_api_key or ""
+        if selected_mode != "off":
+            api_key_val = st.text_input("Anthropic API Key", value=api_key_val, type="password")
 
-    st.divider()
+        if st.button("Save LLM Settings"):
+            updates = {"LLM_MODE": selected_mode}
+            if selected_mode != "off" and api_key_val:
+                updates["ANTHROPIC_API_KEY"] = api_key_val
+            _write_env(updates)
+            st.success("Saved. Restart app to apply.")
 
-    # --- Risk Parameters ---
-    st.subheader("Risk Parameters")
-    params = settings.risk
+    with tab2:
+        st.markdown('<div class="section-header">Risk Parameters</div>', unsafe_allow_html=True)
+        p = settings.risk
 
-    col1, col2 = st.columns(2)
-    with col1:
-        new_max_pos = st.slider("Max Position Size", 0.01, 0.50, params.max_position_pct,
-                                0.01, format="%.0f%%",
-                                help="Max allocation per position")
-        new_heat = st.slider("Max Portfolio Heat", 0.01, 0.30, params.max_portfolio_heat,
-                             0.01, format="%.0f%%",
-                             help="Max total portfolio risk")
-        new_dd = st.slider("Drawdown Circuit Breaker", -0.50, -0.01,
-                           params.drawdown_circuit_breaker, 0.01, format="%.0f%%",
-                           help="Stop trading at this drawdown from peak")
-        new_max_pos_count = st.number_input("Max Simultaneous Positions", 1, 20,
-                                            params.max_simultaneous_positions)
-        new_sector = st.slider("Max Sector Concentration", 0.10, 1.00,
-                               params.max_sector_concentration, 0.05, format="%.0f%%",
-                               help="Max allocation to one sector")
+        col1, col2 = st.columns(2)
+        with col1:
+            new_max_pos = st.slider("Max Position Size", 0.01, 0.50, p.max_position_pct, 0.01, format="%.0f%%")
+            new_heat = st.slider("Max Portfolio Heat", 0.01, 0.30, p.max_portfolio_heat, 0.01, format="%.0f%%")
+            new_dd = st.slider("Drawdown Breaker", -0.50, -0.01, p.drawdown_circuit_breaker, 0.01, format="%.0f%%")
+            new_count = st.number_input("Max Positions", 1, 20, p.max_simultaneous_positions)
+            new_sector = st.slider("Sector Cap", 0.10, 1.00, p.max_sector_concentration, 0.05, format="%.0f%%")
+        with col2:
+            new_cash = st.slider("Cash Reserve", 0.0, 0.50, p.cash_reserve_pct, 0.05, format="%.0f%%")
+            new_daily = st.slider("Daily Risk", 0.01, 0.20, p.max_daily_risk, 0.01, format="%.0f%%")
+            new_profit = st.slider("Profit Target", 0.01, 0.50, p.min_profit_target, 0.01, format="%.0f%%")
+            new_atr_s = st.number_input("Stop ATR (Swing)", 0.5, 5.0, p.stop_loss_atr_swing, 0.1)
+            new_atr_p = st.number_input("Stop ATR (Position)", 0.5, 5.0, p.stop_loss_atr_position, 0.1)
 
-    with col2:
-        new_cash = st.slider("Cash Reserve", 0.0, 0.50, params.cash_reserve_pct,
-                             0.05, format="%.0f%%",
-                             help="Minimum cash reserve")
-        new_daily = st.slider("Max Daily Risk", 0.01, 0.20, params.max_daily_risk,
-                              0.01, format="%.0f%%")
-        new_profit = st.slider("Min Profit Target", 0.01, 0.50, params.min_profit_target,
-                               0.01, format="%.0f%%")
-        new_atr_swing = st.number_input("Stop Loss ATR (Swing)", 0.5, 5.0,
-                                        params.stop_loss_atr_swing, 0.1)
-        new_atr_pos = st.number_input("Stop Loss ATR (Position)", 0.5, 5.0,
-                                      params.stop_loss_atr_position, 0.1)
+        new_corr = st.slider("Max Position Correlation", 0.3, 1.0, p.max_position_correlation, 0.05,
+                             help="Reject new positions with avg correlation above this")
 
-    if st.button("Save Risk Parameters"):
-        _write_env({
-            "MAX_POSITION_PCT": f"{new_max_pos:.2f}",
-            "MAX_PORTFOLIO_HEAT": f"{new_heat:.2f}",
-            "DRAWDOWN_CIRCUIT_BREAKER": f"{new_dd:.2f}",
-            "MAX_SIMULTANEOUS_POSITIONS": str(int(new_max_pos_count)),
-            "MAX_SECTOR_CONCENTRATION": f"{new_sector:.2f}",
-            "CASH_RESERVE_PCT": f"{new_cash:.2f}",
-            "MAX_DAILY_RISK": f"{new_daily:.2f}",
-            "MIN_PROFIT_TARGET": f"{new_profit:.2f}",
-            "STOP_LOSS_ATR_SWING": f"{new_atr_swing:.1f}",
-            "STOP_LOSS_ATR_POSITION": f"{new_atr_pos:.1f}",
-        })
-        st.success("Risk parameters saved. Restart the app to apply.")
+        if st.button("Save Risk Parameters"):
+            _write_env({
+                "MAX_POSITION_PCT": f"{new_max_pos:.2f}",
+                "MAX_PORTFOLIO_HEAT": f"{new_heat:.2f}",
+                "DRAWDOWN_CIRCUIT_BREAKER": f"{new_dd:.2f}",
+                "MAX_SIMULTANEOUS_POSITIONS": str(int(new_count)),
+                "MAX_SECTOR_CONCENTRATION": f"{new_sector:.2f}",
+                "CASH_RESERVE_PCT": f"{new_cash:.2f}",
+                "MAX_DAILY_RISK": f"{new_daily:.2f}",
+                "MIN_PROFIT_TARGET": f"{new_profit:.2f}",
+                "STOP_LOSS_ATR_SWING": f"{new_atr_s:.1f}",
+                "STOP_LOSS_ATR_POSITION": f"{new_atr_p:.1f}",
+                "MAX_POSITION_CORRELATION": f"{new_corr:.2f}",
+            })
+            st.success("Saved. Restart app to apply.")
 
-    st.divider()
+    with tab3:
+        st.markdown('<div class="section-header">API Keys</div>', unsafe_allow_html=True)
+        st.caption("Saved to .env (gitignored)")
 
-    # --- API Keys ---
-    st.subheader("API Keys")
-    st.caption("Keys are saved to .env (gitignored, never committed)")
+        new_anthropic = st.text_input("Anthropic", value=settings.anthropic_api_key, type="password")
+        new_sec = st.text_input("SEC API", value=settings.sec_api_key, type="password")
+        col1, col2 = st.columns(2)
+        with col1:
+            new_r_id = st.text_input("Reddit Client ID", value=settings.reddit_client_id, type="password")
+        with col2:
+            new_r_sec = st.text_input("Reddit Secret", value=settings.reddit_client_secret, type="password")
+        new_av = st.text_input("Alpha Vantage", value=settings.alpha_vantage_api_key, type="password",
+                               help="Free at alphavantage.co — enables data fallback")
+        col1, col2 = st.columns(2)
+        with col1:
+            new_az_u = st.text_input("Avanza User", value=settings.avanza_username)
+        with col2:
+            new_az_p = st.text_input("Avanza Pass", value=settings.avanza_password, type="password")
 
-    new_anthropic = st.text_input("Anthropic API Key", value=settings.anthropic_api_key,
-                                  type="password", help="For LLM modes (haiku/sonnet)")
-    new_sec = st.text_input("SEC API Key", value=settings.sec_api_key,
-                            type="password", help="Free at https://sec-api.io/")
-    col_r1, col_r2 = st.columns(2)
-    with col_r1:
-        new_reddit_id = st.text_input("Reddit Client ID", value=settings.reddit_client_id,
-                                      type="password", help="https://www.reddit.com/prefs/apps")
-    with col_r2:
-        new_reddit_secret = st.text_input("Reddit Client Secret", value=settings.reddit_client_secret,
-                                          type="password")
-    new_av = st.text_input("Alpha Vantage API Key", value=settings.alpha_vantage_api_key,
-                           type="password", help="Free at https://www.alphavantage.co/support/#api-key")
-    col_a1, col_a2 = st.columns(2)
-    with col_a1:
-        new_avanza_user = st.text_input("Avanza Username", value=settings.avanza_username,
-                                        help="Optional - for auto-trading")
-    with col_a2:
-        new_avanza_pass = st.text_input("Avanza Password", value=settings.avanza_password,
-                                        type="password")
+        if st.button("Save API Keys"):
+            keys = {}
+            if new_anthropic: keys["ANTHROPIC_API_KEY"] = new_anthropic
+            if new_sec: keys["SEC_API_KEY"] = new_sec
+            if new_r_id: keys["REDDIT_CLIENT_ID"] = new_r_id
+            if new_r_sec: keys["REDDIT_CLIENT_SECRET"] = new_r_sec
+            if new_av: keys["ALPHA_VANTAGE_API_KEY"] = new_av
+            if new_az_u: keys["AVANZA_USERNAME"] = new_az_u
+            if new_az_p: keys["AVANZA_PASSWORD"] = new_az_p
+            if keys:
+                _write_env(keys)
+                st.success(f"Saved {len(keys)} key(s). Restart to apply.")
 
-    if st.button("Save API Keys"):
-        key_updates = {}
-        if new_anthropic: key_updates["ANTHROPIC_API_KEY"] = new_anthropic
-        if new_sec: key_updates["SEC_API_KEY"] = new_sec
-        if new_reddit_id: key_updates["REDDIT_CLIENT_ID"] = new_reddit_id
-        if new_reddit_secret: key_updates["REDDIT_CLIENT_SECRET"] = new_reddit_secret
-        if new_av: key_updates["ALPHA_VANTAGE_API_KEY"] = new_av
-        if new_avanza_user: key_updates["AVANZA_USERNAME"] = new_avanza_user
-        if new_avanza_pass: key_updates["AVANZA_PASSWORD"] = new_avanza_pass
-        if key_updates:
-            _write_env(key_updates)
-            st.success(f"Saved {len(key_updates)} API key(s). Restart the app to apply.")
-        else:
-            st.info("No keys to save (all fields empty).")
+    with tab4:
+        st.markdown('<div class="section-header">Alert Configuration</div>', unsafe_allow_html=True)
+        st.caption("Get notified when market regime changes")
 
-    st.divider()
+        env = _read_env()
 
-    # --- Packages ---
-    st.subheader("Active Packages")
-    from config.watchlists import get_total_symbol_count, WATCHLIST_PACKAGES
-    st.write(f"**Active:** {', '.join(settings.active_packages)} ({len(settings.watchlist)} symbols)")
-    st.write(f"**Total available:** {len(WATCHLIST_PACKAGES)} packages, {get_total_symbol_count()} symbols")
-    st.caption("Set `ACTIVE_PACKAGES` in .env to change default packages. Scans always prompt for package selection.")
+        alert_email = st.text_input("Alert Email", value=env.get("ALERT_EMAIL_TO", ""),
+                                    placeholder="your@email.com")
+        smtp_host = st.text_input("SMTP Host", value=env.get("ALERT_SMTP_HOST", ""),
+                                  placeholder="smtp.gmail.com")
+        col1, col2 = st.columns(2)
+        with col1:
+            smtp_port = st.text_input("SMTP Port", value=env.get("ALERT_SMTP_PORT", "587"))
+        with col2:
+            smtp_user = st.text_input("SMTP User", value=env.get("ALERT_SMTP_USER", ""), type="password")
+        smtp_pass = st.text_input("SMTP Password", value=env.get("ALERT_SMTP_PASS", ""), type="password")
+
+        st.divider()
+        webhook = st.text_input("Webhook URL", value=env.get("ALERT_WEBHOOK_URL", ""),
+                                placeholder="https://hooks.slack.com/... or Telegram bot URL",
+                                help="Works with Slack, Discord, Telegram bots, or any webhook endpoint")
+
+        if st.button("Save Alert Settings"):
+            alert_updates = {}
+            if alert_email: alert_updates["ALERT_EMAIL_TO"] = alert_email
+            if smtp_host: alert_updates["ALERT_SMTP_HOST"] = smtp_host
+            if smtp_port: alert_updates["ALERT_SMTP_PORT"] = smtp_port
+            if smtp_user: alert_updates["ALERT_SMTP_USER"] = smtp_user
+            if smtp_pass: alert_updates["ALERT_SMTP_PASS"] = smtp_pass
+            if webhook: alert_updates["ALERT_WEBHOOK_URL"] = webhook
+            if alert_updates:
+                _write_env(alert_updates)
+                st.success("Alert settings saved.")
