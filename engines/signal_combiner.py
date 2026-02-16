@@ -7,6 +7,8 @@ import logging
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional
 
+import pandas as pd
+
 from engines.base import BaseEngine, EngineResult
 from engines.momentum import MomentumEngine
 from engines.technical import TechnicalEngine
@@ -89,8 +91,20 @@ class SignalCombiner:
 
         return regime_weights
 
-    def analyze(self, symbol: str, adaptive_weights: Optional[Dict[str, float]] = None) -> CombinedSignal:
-        """Run all engines and produce a combined signal with regime awareness."""
+    def analyze(self, symbol: str, df: Optional[pd.DataFrame] = None,
+                backtest_date: Optional[str] = None,
+                adaptive_weights: Optional[Dict[str, float]] = None) -> CombinedSignal:
+        """Run all engines and produce a combined signal with regime awareness.
+
+        Args:
+            symbol: Ticker symbol.
+            df: Pre-fetched DataFrame with indicators (backtest mode). When provided,
+                engines use this instead of fetching live data.
+            backtest_date: Current simulation date (ISO format). When set, engines
+                that can't reconstruct historical data (sector, fundamental) return
+                neutral HOLD signals.
+            adaptive_weights: Engine weights from the learning system.
+        """
         regime = self.regime_info
         weights = self.get_active_weights(adaptive_weights)
 
@@ -99,11 +113,12 @@ class SignalCombiner:
 
         for name, engine in self.engines.items():
             try:
-                # Pass regime to mean_reversion engine
+                # All engines accept df and backtest_date via the updated interface
                 if name == "mean_reversion":
-                    result = engine.analyze(symbol, regime=regime.regime.value)
+                    result = engine.analyze(symbol, df=df, backtest_date=backtest_date,
+                                            regime=regime.regime.value)
                 else:
-                    result = engine.analyze(symbol)
+                    result = engine.analyze(symbol, df=df, backtest_date=backtest_date)
                 results[name] = result
                 if result.reasons:
                     prefix = name.replace("_", " ").title()
@@ -198,12 +213,24 @@ class SignalCombiner:
             regime=regime,
         )
 
-    def analyze_multiple(self, symbols: List[str], adaptive_weights: Optional[Dict[str, float]] = None) -> List[CombinedSignal]:
-        """Analyze multiple symbols and return sorted by combined score."""
+    def analyze_multiple(self, symbols: List[str],
+                         df_dict: Optional[Dict[str, pd.DataFrame]] = None,
+                         backtest_date: Optional[str] = None,
+                         adaptive_weights: Optional[Dict[str, float]] = None) -> List[CombinedSignal]:
+        """Analyze multiple symbols and return sorted by combined score.
+
+        Args:
+            symbols: List of ticker symbols.
+            df_dict: Mapping of symbol -> pre-fetched DataFrame (backtest mode).
+            backtest_date: Current simulation date (backtest mode).
+            adaptive_weights: Engine weights from the learning system.
+        """
         signals = []
         for sym in symbols:
             try:
-                sig = self.analyze(sym, adaptive_weights=adaptive_weights)
+                sym_df = df_dict.get(sym) if df_dict else None
+                sig = self.analyze(sym, df=sym_df, backtest_date=backtest_date,
+                                   adaptive_weights=adaptive_weights)
                 signals.append(sig)
             except Exception as e:
                 logger.error(f"Failed to analyze {sym}: {e}")

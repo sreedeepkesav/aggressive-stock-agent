@@ -30,6 +30,7 @@ class RiskParams:
     min_profit_target: float = 0.08          # 8% minimum profit target
     stop_loss_atr_swing: float = 2.0         # 2.0 ATR for swing trades
     stop_loss_atr_position: float = 2.5      # 2.5 ATR for position trades
+    max_position_correlation: float = 0.75   # Max avg correlation to existing holdings
 
     @classmethod
     def from_env(cls) -> "RiskParams":
@@ -45,6 +46,7 @@ class RiskParams:
             min_profit_target=float(os.getenv("MIN_PROFIT_TARGET", "0.08")),
             stop_loss_atr_swing=float(os.getenv("STOP_LOSS_ATR_SWING", "2.0")),
             stop_loss_atr_position=float(os.getenv("STOP_LOSS_ATR_POSITION", "2.5")),
+            max_position_correlation=float(os.getenv("MAX_POSITION_CORRELATION", "0.75")),
         )
 
 

@@ -1,19 +1,16 @@
 """Fundamental analysis scorer - with sector-relative valuation, earnings quality, ROIC, PEG weighting."""
 
 import logging
+from typing import Optional
+
+import pandas as pd
 
 from data.market_data import get_info
 from data.earnings import get_earnings_surprise_history
+from data.sector_cache import get_sector_median_pe
 from engines.base import BaseEngine, EngineResult
 
 logger = logging.getLogger("stock_agent")
-
-# Sector median P/E approximations (updated periodically)
-SECTOR_MEDIAN_PE = {
-    "Technology": 30, "Healthcare": 22, "Financials": 14, "Consumer Discretionary": 25,
-    "Consumer Staples": 22, "Energy": 12, "Industrials": 20, "Materials": 16,
-    "Utilities": 18, "Real Estate": 35, "Communication Services": 20,
-}
 
 _YFINANCE_SECTOR_MAP = {
     "Financial Services": "Financials", "Consumer Cyclical": "Consumer Discretionary",
@@ -28,7 +25,17 @@ class FundamentalEngine(BaseEngine):
     def name(self) -> str:
         return "fundamental"
 
-    def analyze(self, symbol: str) -> EngineResult:
+    def analyze(self, symbol: str, df: Optional[pd.DataFrame] = None,
+                backtest_date: Optional[str] = None, **kwargs) -> EngineResult:
+        # Fundamental data is a current-point-in-time snapshot from yfinance.
+        # During backtesting, we can't reconstruct historical fundamentals,
+        # so we return a neutral signal to avoid lookahead bias.
+        if backtest_date is not None:
+            return EngineResult(
+                self.name, symbol, "HOLD", 0.0,
+                ["Fundamental engine neutral during backtest (historical fundamentals unavailable)"]
+            )
+
         info = get_info(symbol)
         if not info:
             return EngineResult(self.name, symbol, "NO_DATA", 0.0, ["No fundamental data"])
@@ -200,7 +207,8 @@ class FundamentalEngine(BaseEngine):
     def _valuation_relative(info: dict, sector: str) -> dict:
         """Sector-relative valuation instead of global thresholds."""
         score, factors = 0.0, []
-        sector_pe = SECTOR_MEDIAN_PE.get(sector, 20)
+        sector_pes = get_sector_median_pe()
+        sector_pe = sector_pes.get(sector, 20)
 
         # Forward P/E (preferred over trailing)
         fwd_pe = info.get("forwardPE")

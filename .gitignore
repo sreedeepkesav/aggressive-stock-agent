@@ -33,6 +33,9 @@ logs/
 # Claude Code
 .claude/
 
+# Legacy archive
+stock_agent_legacy.py
+
 # OS
 .DS_Store
 Thumbs.db

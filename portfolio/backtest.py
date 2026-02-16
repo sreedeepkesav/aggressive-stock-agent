@@ -298,9 +298,14 @@ def run_backtest(symbols: List[str], months: int = 12,
                     if score > 0.3:
                         scored.append((sym, score, price, "BUY", "UNKNOWN"))
                 else:
-                    # Full mode: use real SignalCombiner
+                    # Full mode: use real SignalCombiner with historical data only.
+                    # CRITICAL: Slice DataFrame up to current backtest date to prevent
+                    # lookahead bias. Engines receive only data available at this point
+                    # in time, never future prices.
                     try:
-                        sig = combiner.analyze(sym)
+                        df_to_date = sym_df.iloc[:idx + 1]  # Include current row, nothing after
+                        date_str = date.strftime("%Y-%m-%d")
+                        sig = combiner.analyze(sym, df=df_to_date, backtest_date=date_str)
                         if sig.is_actionable and sig.action in ("BUY", "STRONG_BUY"):
                             # Check earnings blackout
                             from data.earnings import is_earnings_blackout

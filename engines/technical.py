@@ -1,6 +1,7 @@
 """Technical breakout detector - with market structure, false breakout detection, VWAP, ATR-scaled thresholds."""
 
 import logging
+from typing import Optional
 
 import numpy as np
 import pandas as pd
@@ -19,8 +20,10 @@ class TechnicalEngine(BaseEngine):
     def name(self) -> str:
         return "technical"
 
-    def analyze(self, symbol: str) -> EngineResult:
-        df = get_history_with_indicators(symbol, period="6mo")
+    def analyze(self, symbol: str, df: Optional[pd.DataFrame] = None,
+                backtest_date: Optional[str] = None, **kwargs) -> EngineResult:
+        if df is None:
+            df = get_history_with_indicators(symbol, period="6mo")
         if df.empty:
             return EngineResult(self.name, symbol, "NO_DATA", 0.0, ["Insufficient data"])
 

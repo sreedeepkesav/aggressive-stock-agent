@@ -1,6 +1,7 @@
 """Sector rotation strategy - with relative strength ranking and correlation check."""
 
 import logging
+from typing import Optional
 
 import numpy as np
 import pandas as pd
@@ -46,7 +47,17 @@ class SectorEngine(BaseEngine):
     def name(self) -> str:
         return "sector"
 
-    def analyze(self, symbol: str) -> EngineResult:
+    def analyze(self, symbol: str, df: Optional[pd.DataFrame] = None,
+                backtest_date: Optional[str] = None, **kwargs) -> EngineResult:
+        # Sector analysis requires live ETF data and current sector rankings.
+        # During backtesting, historical sector rankings can't be reconstructed,
+        # so we return a neutral signal to avoid lookahead bias.
+        if backtest_date is not None:
+            return EngineResult(
+                self.name, symbol, "HOLD", 0.0,
+                ["Sector engine neutral during backtest (historical sector rankings unavailable)"]
+            )
+
         try:
             sector = self._identify_sector(symbol)
             if not sector:

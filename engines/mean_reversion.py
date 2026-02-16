@@ -1,6 +1,7 @@
 """Mean reversion detector - regime-gated with divergences, stochastic, detrended analysis, exhaustion."""
 
 import logging
+from typing import Optional
 
 import numpy as np
 import pandas as pd
@@ -19,8 +20,11 @@ class MeanReversionEngine(BaseEngine):
     def name(self) -> str:
         return "mean_reversion"
 
-    def analyze(self, symbol: str, regime: str = "UNKNOWN") -> EngineResult:
-        df = get_history_with_indicators(symbol, period="1y")
+    def analyze(self, symbol: str, df: Optional[pd.DataFrame] = None,
+                backtest_date: Optional[str] = None, regime: str = "UNKNOWN",
+                **kwargs) -> EngineResult:
+        if df is None:
+            df = get_history_with_indicators(symbol, period="1y")
         if df.empty:
             return EngineResult(self.name, symbol, "NO_DATA", 0.0, ["Insufficient data"])
 

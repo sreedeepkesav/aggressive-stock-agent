@@ -2,7 +2,9 @@
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
-from typing import Dict, List
+from typing import Dict, List, Optional
+
+import pandas as pd
 
 
 @dataclass
@@ -46,5 +48,16 @@ class BaseEngine(ABC):
         ...
 
     @abstractmethod
-    def analyze(self, symbol: str) -> EngineResult:
+    def analyze(self, symbol: str, df: Optional[pd.DataFrame] = None,
+                backtest_date: Optional[str] = None, **kwargs) -> EngineResult:
+        """Analyze a symbol and produce a signal.
+
+        Args:
+            symbol: Ticker symbol to analyze.
+            df: Pre-fetched DataFrame with indicators (backtest mode).
+                When provided, the engine MUST use this instead of fetching live data.
+            backtest_date: Current simulation date (ISO format). When set, the engine
+                is running inside a backtest and must not fetch live data.
+            **kwargs: Engine-specific parameters (e.g., regime for MeanReversion).
+        """
         ...

@@ -1,7 +1,7 @@
 """Momentum breakout engine - with divergence detection, ROC confirmation, OBV trend."""
 
 import logging
-from typing import Dict
+from typing import Dict, Optional
 
 import numpy as np
 import pandas as pd
@@ -20,8 +20,10 @@ class MomentumEngine(BaseEngine):
     def name(self) -> str:
         return "momentum"
 
-    def analyze(self, symbol: str) -> EngineResult:
-        df = get_history_with_indicators(symbol, period="6mo")
+    def analyze(self, symbol: str, df: Optional[pd.DataFrame] = None,
+                backtest_date: Optional[str] = None, **kwargs) -> EngineResult:
+        if df is None:
+            df = get_history_with_indicators(symbol, period="6mo")
         if df.empty:
             return EngineResult(self.name, symbol, "NO_DATA", 0.0, ["Insufficient data"])
 

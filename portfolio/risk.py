@@ -3,6 +3,8 @@
 import logging
 from typing import List, Optional
 
+import numpy as np
+
 from config.settings import RiskParams
 from data.market_data import get_history
 from data.indicators import calculate_atr
@@ -47,12 +49,27 @@ class RiskManager:
             if sector_value / total_value > self.params.max_sector_concentration:
                 reasons.append(f"Sector '{sector}' would exceed {self.params.max_sector_concentration:.0%} cap")
 
-        # 5. Drawdown circuit breaker
+        # 5. Correlation check — prevent correlated position clustering
+        if positions and self.params.max_position_correlation < 1.0:
+            correlations = []
+            for pos in positions:
+                corr = self._calculate_correlation(symbol, pos.symbol)
+                correlations.append((pos.symbol, corr))
+
+            avg_corr = np.mean([c for _, c in correlations])
+            if avg_corr > self.params.max_position_correlation:
+                corr_details = ", ".join(f"{s}:{c:.2f}" for s, c in correlations)
+                reasons.append(
+                    f"High correlation to holdings: avg {avg_corr:.2f} > "
+                    f"{self.params.max_position_correlation:.2f} ({corr_details})"
+                )
+
+        # 6. Drawdown circuit breaker
         drawdown = (total_value - peak) / peak if peak > 0 else 0
         if drawdown < self.params.drawdown_circuit_breaker:
             reasons.append(f"Drawdown circuit breaker: {drawdown:.1%} < {self.params.drawdown_circuit_breaker:.1%}")
 
-        # 6. Portfolio heat
+        # 7. Portfolio heat
         total_risk = sum(
             abs(p.entry_price - p.stop_loss) * p.quantity
             for p in positions if p.stop_loss > 0
@@ -61,7 +78,7 @@ class RiskManager:
         if proposed_risk_pct > self.params.max_portfolio_heat:
             reasons.append(f"Portfolio heat {proposed_risk_pct:.1%} exceeds {self.params.max_portfolio_heat:.0%}")
 
-        # 7. Duplicate position check
+        # 8. Duplicate position check
         existing = [p for p in positions if p.symbol == symbol]
         if existing:
             reasons.append(f"Already holding {symbol}")
@@ -74,6 +91,35 @@ class RiskManager:
             "position_count": len(positions),
             "drawdown": drawdown,
         }
+
+    def _calculate_correlation(self, symbol: str, existing_symbol: str,
+                               lookback_days: int = 60) -> float:
+        """Calculate correlation of daily returns between two symbols.
+
+        Returns 1.0 (assume high correlation) if data is insufficient or fetch fails.
+        This is the conservative choice — it prevents adding correlated positions when
+        we can't tell.
+        """
+        try:
+            df1 = get_history(symbol, period="3mo")
+            df2 = get_history(existing_symbol, period="3mo")
+
+            if df1.empty or df2.empty or len(df1) < 20 or len(df2) < 20:
+                return 1.0
+
+            returns1 = df1["Close"].pct_change().dropna().tail(lookback_days)
+            returns2 = df2["Close"].pct_change().dropna().tail(lookback_days)
+
+            # Align on common dates
+            common_idx = returns1.index.intersection(returns2.index)
+            if len(common_idx) < 20:
+                return 1.0
+
+            corr = returns1.loc[common_idx].corr(returns2.loc[common_idx])
+            return float(corr) if not np.isnan(corr) else 1.0
+        except Exception as e:
+            logger.debug(f"Correlation calc failed {symbol} vs {existing_symbol}: {e}")
+            return 1.0
 
     def calculate_stop_loss(self, symbol: str, entry_price: float, trade_type: str = "swing") -> float:
         """Calculate ATR-based stop loss."""
