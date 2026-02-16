@@ -249,7 +249,7 @@ with st.sidebar:
 
     page = st.radio(
         "Navigate",
-        ["Dashboard", "Analyze", "Scan", "Portfolio", "Backtest", "Discover", "Settings"],
+        ["Dashboard", "Analyze", "Scan", "Paper Trade", "Portfolio", "Backtest", "Discover", "Settings"],
         index=0,
         label_visibility="collapsed",
     )
@@ -504,11 +504,27 @@ elif page == "Analyze":
         st.markdown('<div class="section-header">Engine Breakdown</div>', unsafe_allow_html=True)
         render_engine_results(sig)
 
-        # Reasons
-        if sig.reasons:
-            with st.expander("Signal Reasoning", expanded=False):
-                for r in sig.reasons[:10]:
-                    st.markdown(f"- {r}")
+        # Insider signal + reasons
+        col_left, col_right = st.columns([1, 1])
+        with col_left:
+            if sig.reasons:
+                with st.expander("Signal Reasoning", expanded=False):
+                    for r in sig.reasons[:10]:
+                        st.markdown(f"- {r}")
+        with col_right:
+            try:
+                from data.insider_signal import get_insider_signal
+                insider = get_insider_signal(symbol)
+                if insider["total_filings"] > 0:
+                    with st.expander(f"Insider Activity ({insider['net_sentiment']})", expanded=False):
+                        ins_color = {"BULLISH": "#4caf50", "BEARISH": "#ef5350"}.get(insider["net_sentiment"], "#9e9e9e")
+                        st.markdown(f'<span style="color:{ins_color};font-weight:600">{insider["net_sentiment"]}</span> — {insider["reason"]}',
+                                    unsafe_allow_html=True)
+                        st.caption(f"Buys: {insider['buy_count']} | Sells: {insider['sell_count']} | "
+                                   f"Unique buyers: {insider.get('unique_buyers', 0)} | "
+                                   f"Recent buys (30d): {insider.get('recent_buys', 0)}")
+            except Exception:
+                pass
 
         # Save analysis
         price = 0
@@ -643,6 +659,240 @@ elif page == "Scan":
                     col2.metric("Confidence", f"{sig.confidence:.0%}")
                     col3.metric("Agreement", f"{sig.agreement_pct:.0%}")
                     render_engine_results(sig)
+
+
+# ============================================================
+# Page: Paper Trade
+# ============================================================
+elif page == "Paper Trade":
+    st.markdown("## Paper Trading")
+    st.caption("Simulated trading with real data — prove the system before risking capital")
+
+    from portfolio.paper_trader import (
+        PaperTrader, paper_get_positions, paper_get_trades,
+        paper_get_daily_log, paper_get_cash, paper_get_peak,
+        _ensure_paper_tables, kelly_fraction,
+    )
+    _ensure_paper_tables()
+
+    tab_pt1, tab_pt2, tab_pt3, tab_pt4 = st.tabs(["Overview", "Run Cycle", "Trade Log", "Attribution"])
+
+    with tab_pt1:
+        trader = PaperTrader()
+        summary_pt = trader.get_summary()
+
+        # KPI cards
+        col1, col2, col3, col4 = st.columns(4)
+        with col1:
+            pv = summary_pt["portfolio_value"]
+            st.markdown(card("Paper Portfolio", f"${pv:,.0f}",
+                             f"Peak: ${summary_pt['peak_value']:,.0f}"),
+                        unsafe_allow_html=True)
+        with col2:
+            dd_color = "#ef5350" if summary_pt['drawdown'] < -0.05 else "#9e9e9e"
+            st.markdown(card("Drawdown", f"{summary_pt['drawdown']:.1%}", color=dd_color),
+                        unsafe_allow_html=True)
+        with col3:
+            wr_color = "#4caf50" if summary_pt['win_rate'] >= 0.5 else "#ef5350"
+            st.markdown(card("Win Rate", f"{summary_pt['win_rate']:.0%}",
+                             f"{summary_pt['total_trades']} trades", color=wr_color),
+                        unsafe_allow_html=True)
+        with col4:
+            st.markdown(card("Sharpe", f"{summary_pt['sharpe_ratio']:.2f}",
+                             f"Kelly: {summary_pt['kelly_fraction']:.1%}"),
+                        unsafe_allow_html=True)
+
+        col5, col6, col7 = st.columns(3)
+        with col5:
+            pnl_color = "#4caf50" if summary_pt['total_pnl'] >= 0 else "#ef5350"
+            st.markdown(card("Total PnL", f"${summary_pt['total_pnl']:+,.0f}", color=pnl_color),
+                        unsafe_allow_html=True)
+        with col6:
+            st.markdown(card("Profit Factor", f"{summary_pt['profit_factor']:.2f}"),
+                        unsafe_allow_html=True)
+        with col7:
+            st.markdown(card("Cash", f"${summary_pt['cash']:,.0f}"),
+                        unsafe_allow_html=True)
+
+        # Open positions
+        if summary_pt["positions"]:
+            st.markdown('<div class="section-header">Open Positions</div>', unsafe_allow_html=True)
+            pos_rows = []
+            for p in summary_pt["positions"]:
+                pos_rows.append({
+                    "Symbol": p["symbol"],
+                    "Qty": p["qty"],
+                    "Entry": f"${p['entry']:.2f}",
+                    "Current": f"${p['current']:.2f}",
+                    "PnL": f"${p['pnl']:+.2f}",
+                    "Return": p["pnl_pct"],
+                    "Stop": f"${p['stop']:.2f}",
+                    "Signal": p["signal"],
+                })
+            st.dataframe(pd.DataFrame(pos_rows), use_container_width=True, hide_index=True)
+
+        # Equity curve from daily log
+        daily = paper_get_daily_log(60)
+        if daily:
+            st.markdown('<div class="section-header">Equity Curve</div>', unsafe_allow_html=True)
+            eq_data = list(reversed(daily))
+            eq_df = pd.DataFrame({
+                "Day": range(len(eq_data)),
+                "Value": [d["portfolio_value"] for d in eq_data],
+            })
+            eq_chart = alt.Chart(eq_df).mark_area(
+                line={"color": "#4caf50"},
+                color=alt.Gradient(
+                    gradient="linear",
+                    stops=[
+                        alt.GradientStop(color="rgba(76, 175, 80, 0.3)", offset=0),
+                        alt.GradientStop(color="rgba(76, 175, 80, 0.02)", offset=1),
+                    ],
+                    x1=1, x2=1, y1=1, y2=0,
+                ),
+            ).encode(
+                x=alt.X("Day:Q", title="Days"),
+                y=alt.Y("Value:Q", title="Portfolio ($)", scale=alt.Scale(zero=False)),
+                tooltip=["Day", alt.Tooltip("Value:Q", format="$,.0f")],
+            ).properties(height=250)
+            st.altair_chart(eq_chart, use_container_width=True)
+
+    with tab_pt2:
+        st.markdown('<div class="section-header">Execute Paper Trading Cycle</div>', unsafe_allow_html=True)
+        st.caption("Runs the full signal pipeline: analyze → risk check → paper trade")
+
+        from config.watchlists import list_packages_by_region, get_package_symbols as pt_get_pkg
+
+        pt_pkg_options = {}
+        for region, pkgs in list_packages_by_region().items():
+            for key, name, count in pkgs:
+                pt_pkg_options[f"{name} ({count}) [{region}]"] = key
+
+        col1, col2 = st.columns([2, 1])
+        with col1:
+            pt_src = st.selectbox("Symbols", ["Active Watchlist", "Package", "Custom"], key="pt_src")
+        with col2:
+            pass
+
+        if pt_src == "Custom":
+            pt_custom = st.text_input("Symbols", value="NVDA,AAPL,MSFT,TSLA,AMD", key="pt_custom")
+            pt_symbols = [s.strip().upper() for s in pt_custom.split(",") if s.strip()]
+        elif pt_src == "Package":
+            pt_label = st.selectbox("Package", list(pt_pkg_options.keys()),
+                                    index=None, placeholder="Choose...", key="pt_pkg")
+            pt_symbols = pt_get_pkg([pt_pkg_options[pt_label]]) if pt_label else []
+        else:
+            pt_symbols = settings.watchlist[:20]  # Limit for speed
+
+        if st.button("Run Paper Trading Cycle", type="primary", use_container_width=True,
+                     disabled=len(pt_symbols) == 0):
+            with st.spinner(f"Paper trading {len(pt_symbols)} symbols..."):
+                trader = PaperTrader()
+                result = trader.run_daily_cycle(pt_symbols)
+
+            st.success(f"Cycle complete: ${result['portfolio_value']:,.0f} portfolio")
+            if result["actions"]:
+                st.markdown('<div class="section-header">Actions Taken</div>', unsafe_allow_html=True)
+                for a in result["actions"]:
+                    st.markdown(f"- {a}")
+            else:
+                st.info("No trades executed this cycle (no actionable signals or risk limits reached)")
+
+    with tab_pt3:
+        st.markdown('<div class="section-header">Paper Trade History</div>', unsafe_allow_html=True)
+        trades_pt = paper_get_trades(50)
+        if trades_pt:
+            t_rows = []
+            for t in trades_pt:
+                pnl_str = f"${t['pnl']:+,.0f}" if t['pnl'] else "$0"
+                t_rows.append({
+                    "Symbol": t["symbol"],
+                    "Entry": t["entry_date"][:10],
+                    "Exit": t["exit_date"][:10],
+                    "Entry $": f"${t['entry_price']:.2f}",
+                    "Exit $": f"${t['exit_price']:.2f}",
+                    "Return": f"{t['pnl_pct']:+.1%}",
+                    "PnL": pnl_str,
+                    "Days": t.get("hold_days", ""),
+                    "Reason": t.get("exit_reason", ""),
+                })
+            st.dataframe(pd.DataFrame(t_rows), use_container_width=True, hide_index=True)
+        else:
+            st.info("No paper trades completed yet. Run a few cycles to start building history.")
+
+    with tab_pt4:
+        st.markdown('<div class="section-header">Engine Attribution</div>', unsafe_allow_html=True)
+        st.caption("Which engines actually drive profitable signals?")
+
+        try:
+            from portfolio.attribution import get_engine_attribution, get_signal_agreement_analysis
+
+            attr = get_engine_attribution()
+            if attr:
+                attr_rows = []
+                for eng, data in attr.items():
+                    if data["total_signals"] == 0:
+                        continue
+                    attr_rows.append({
+                        "Engine": eng.replace("_", " ").title(),
+                        "Signals": data["total_signals"],
+                        "Bull Win%": f"{data['bullish_win_rate']:.0%}" if data["bullish_count"] > 0 else "—",
+                        "Bear Win%": f"{data['bearish_win_rate']:.0%}" if data["bearish_count"] > 0 else "—",
+                        "Avg Ret (Bull)": f"{data['avg_return_when_bullish']:+.1%}" if data.get("avg_return_when_bullish") is not None else "—",
+                        "Hi-Conf Acc": f"{data['high_conf_accuracy']:.0%}" if data.get("high_conf_accuracy") is not None else "—",
+                        "Contribution": f"{data['contribution_score']:+.1f}",
+                    })
+
+                if attr_rows:
+                    st.dataframe(pd.DataFrame(attr_rows), use_container_width=True, hide_index=True)
+
+                    # Contribution chart
+                    cont_df = pd.DataFrame([{
+                        "Engine": eng.replace("_", " ").title(),
+                        "Contribution": data["contribution_score"],
+                    } for eng, data in attr.items() if data["total_signals"] > 0])
+
+                    if not cont_df.empty:
+                        cont_chart = alt.Chart(cont_df).mark_bar(
+                            cornerRadiusTopLeft=4, cornerRadiusTopRight=4,
+                        ).encode(
+                            x=alt.X("Engine:N", sort="-y", axis=alt.Axis(labelAngle=0)),
+                            y=alt.Y("Contribution:Q", title="Alpha Contribution"),
+                            color=alt.condition(
+                                alt.datum.Contribution >= 0,
+                                alt.value("#4caf50"),
+                                alt.value("#ef5350"),
+                            ),
+                            tooltip=["Engine", alt.Tooltip("Contribution:Q", format=".1f")],
+                        ).properties(height=250)
+                        st.altair_chart(cont_chart, use_container_width=True)
+
+            # Agreement analysis
+            agree = get_signal_agreement_analysis()
+            if "high_agreement" in agree:
+                st.markdown('<div class="section-header">Does Engine Agreement Matter?</div>',
+                            unsafe_allow_html=True)
+                col1, col2 = st.columns(2)
+                with col1:
+                    h = agree["high_agreement"]
+                    st.markdown(card("High Agreement (70%+)",
+                                     f"{h['win_rate']:.0%} win rate",
+                                     f"{h['count']} signals, avg {h['avg_return']:+.1%}"),
+                                unsafe_allow_html=True)
+                with col2:
+                    l = agree["low_agreement"]
+                    st.markdown(card("Low Agreement (<70%)",
+                                     f"{l['win_rate']:.0%} win rate",
+                                     f"{l['count']} signals, avg {l['avg_return']:+.1%}"),
+                                unsafe_allow_html=True)
+
+                if agree.get("agreement_matters"):
+                    st.success("Engine agreement IS predictive — high-agreement signals perform better")
+                elif agree["high_agreement"]["count"] >= 5:
+                    st.info("Engine agreement shows no significant edge — more data needed")
+
+        except Exception as e:
+            st.info(f"Attribution requires outcome data. Run analyses and wait for 5-day outcomes to accumulate.")
 
 
 # ============================================================
