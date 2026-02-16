@@ -74,6 +74,9 @@ streamlit run app.py              # launch dashboard at localhost:8501
 
 No API keys needed. Zero cost by default.
 
+> **Important:** Every command below assumes you're inside the project folder with the venv active.
+> If you see `ModuleNotFoundError` or `command not found`, run `source venv/bin/activate` first.
+
 <br>
 
 ## Table of Contents
@@ -97,6 +100,9 @@ No API keys needed. Zero cost by default.
 ## Dashboard
 
 ```bash
+cd aggressive-stock-agent
+source venv/bin/activate       # always activate venv first
+
 streamlit run app.py
 ```
 
@@ -121,16 +127,39 @@ Opens at `http://localhost:8501`. Dark theme with regime-colored banners, Altair
 
 ## CLI Usage
 
+> Make sure venv is active before running any command: `source venv/bin/activate`
+
 ```bash
-python stock_agent.py ticker NVDA                          # full analysis on a ticker
-python stock_agent.py scan 10 --package mega_cap_tech      # scan top 10 from a package
-python stock_agent.py packages                             # list all 83 packages
-python stock_agent.py backtest 12 --package mega_cap_tech  # 12-month backtest (full)
-python stock_agent.py backtest 12 -p mega_cap_tech --fast  # fast backtest (instant)
-python stock_agent.py portfolio show                       # positions + exit signals
-python stock_agent.py portfolio stats                      # trade stats + engine accuracy
-python stock_agent.py discovery                            # reddit + news
-python stock_agent.py settings                             # configure interactively
+# Is the market safe right now?
+python stock_agent.py ticker SPY
+
+# Should I buy NVDA?
+python stock_agent.py ticker NVDA
+
+# What's the best semiconductor stock today?
+python stock_agent.py scan 10 --package sector_semiconductors
+
+# Show me top AI stocks
+python stock_agent.py scan 5 --package theme_ai
+
+# List all 83 available packages
+python stock_agent.py packages
+
+# Would this strategy have worked historically?
+python stock_agent.py backtest 6 --package us_mega_cap --fast
+
+# Full backtest with real costs
+python stock_agent.py backtest 12 --package mega_cap_tech
+
+# What are people buzzing about on Reddit?
+python stock_agent.py discovery
+
+# View portfolio + exit signals
+python stock_agent.py portfolio show
+python stock_agent.py portfolio stats
+
+# Configure settings interactively
+python stock_agent.py settings
 ```
 
 <br>
@@ -143,11 +172,20 @@ python stock_agent.py settings                             # configure interacti
 
 Prove the system works with real market data and virtual money before putting capital at risk.
 
+> Make sure venv is active: `source venv/bin/activate`
+
 ```bash
-python -m portfolio.paper_trader                                # trade active watchlist
-python -m portfolio.paper_trader --symbols NVDA AAPL MSFT      # specific symbols
-python -m portfolio.paper_trader --package mega_cap_tech        # trade a package
-python -m portfolio.paper_trader --summary                      # view performance
+# Paper trade specific stocks
+python -m portfolio.paper_trader --symbols NVDA AAPL MSFT TSLA AMD
+
+# Paper trade an entire package
+python -m portfolio.paper_trader --package mega_cap_tech
+
+# Paper trade your active watchlist
+python -m portfolio.paper_trader
+
+# Check how your paper portfolio is doing
+python -m portfolio.paper_trader --summary
 ```
 
 **Position sizing** uses half-Kelly criterion (clamped to 25% max per position). Falls back to 1% risk when fewer than 10 trades in history.
@@ -423,6 +461,7 @@ Another process is using it. Kill any running streamlit or python processes.
 Make sure you're on the latest commit:
 
 ```bash
+source venv/bin/activate
 git pull && pip install -r requirements.txt --upgrade
 ```
 
